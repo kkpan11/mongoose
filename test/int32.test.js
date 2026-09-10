@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const start = require('./common');
-const BSON = require('bson');
+const BSON = require('mongodb/lib/bson');
 const sinon = require('sinon');
 
 const mongoose = start.mongoose;
@@ -301,9 +301,9 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "-42.4" (type number) at path "myInt"'
+          /^Cast to Int32 failed for value "-42.4" \(type number\) at path "myInt"/
         );
       });
     });
@@ -319,9 +319,9 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "helloworld" (type string) at path "myInt"'
+          /^Cast to Int32 failed for value "helloworld" \(type string\) at path "myInt"/
         );
       });
     });
@@ -337,9 +337,9 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "1.2" (type string) at path "myInt"'
+          /^Cast to Int32 failed for value "1\.2" \(type string\) at path "myInt"/
         );
       });
     });
@@ -355,9 +355,9 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "NaN" (type number) at path "myInt"'
+          /^Cast to Int32 failed for value "NaN" \(type number\) at path "myInt"/
         );
       });
     });
@@ -373,9 +373,9 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "2147483648" (type number) at path "myInt"'
+          /^Cast to Int32 failed for value "2147483648" \(type number\) at path "myInt"/
         );
       });
     });
@@ -391,10 +391,24 @@ describe('Int32', function() {
         assert.ok(err);
         assert.ok(err.errors['myInt']);
         assert.equal(err.errors['myInt'].name, 'CastError');
-        assert.equal(
+        assert.match(
           err.errors['myInt'].message,
-          'Cast to Int32 failed for value "-2147483649" (type number) at path "myInt"'
+          /^Cast to Int32 failed for value "-2147483649" \(type number\) at path "myInt"/
         );
+      });
+    });
+
+    describe('when an array is provided to an Int32 field', () => {
+      it('throws a CastError upon validation, even for a single-element or empty array', async() => {
+        for (const value of [[5], [], [5, 6]]) {
+          const doc = new Test({ myInt: value });
+
+          assert.strictEqual(doc.myInt, undefined);
+          const err = await doc.validate().catch(e => e);
+          assert.ok(err);
+          assert.ok(err.errors['myInt']);
+          assert.equal(err.errors['myInt'].name, 'CastError');
+        }
       });
     });
   });
@@ -524,6 +538,7 @@ describe('Int32', function() {
       });
       const Parent = db.model('Parent', parentSchema);
       const Child = db.model('Child', childSchema);
+      await Child.deleteMany({});
 
       const { _id } = await Parent.create({ child: 42 });
       await Child.create({ _id: 42, name: 'test-int32-populate' });

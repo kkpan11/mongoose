@@ -57,6 +57,25 @@ await Test.findOne(); // Will throw "Operation timed out" error because `db` isn
 You must ensure that you have whitelisted your ip on [mongodb](https://www.mongodb.com/docs/atlas/security/ip-access-list/) to allow Mongoose to connect.
 You can allow access from all ips with `0.0.0.0/0`.
 
+<hr id="querysrv-econnrefused" />
+
+<a class="anchor" href="#querysrv-econnrefused">**Q**</a>. I get a `querySrv ECONNREFUSED` error when connecting to MongoDB Atlas using `mongodb+srv://`. What gives?
+
+**A**. Node.js may be failing to resolve MongoDB's SRV records even when your OS DNS works correctly.
+This is a known issue on Windows (confirmed regression in Node.js v24.13.0, see [nodejs/node#61453](https://github.com/nodejs/node/pull/61453)) and can also affect systems where the ISP intercepts DNS at the network level.
+
+The fix is to explicitly set DNS servers in Node.js at the very top of your entry file, before any other imports:
+
+```javascript
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4']);
+
+// Now connect to MongoDB
+mongoose.connect('mongodb+srv://...');
+```
+
+This bypasses the OS/ISP DNS resolver entirely at the Node.js level.
+
 <hr id="not-a-function" />
 
 <a class="anchor" href="#not-a-function">**Q**</a>. x.$__y is not a function. What gives?
@@ -140,7 +159,7 @@ is undefined on the underlying [POJO](guide.html#minimize).
 <a class="anchor" href="#arrow-functions">**Q**</a>. I'm using an arrow function for a [virtual](guide.html#virtuals), [middleware](middleware.html), [getter](api/schematype.html#schematype_SchemaType-get)/[setter](api/schematype.html#schematype_SchemaType-set), or [method](guide.html#methods) and the value of `this` is wrong.
 
 **A**. Arrow functions [handle the `this` keyword differently than conventional functions](https://masteringjs.io/tutorials/fundamentals/arrow#why-not-arrow-functions).
-Mongoose getters/setters depend on `this` to give you access to the document that you're writing to, but this functionality does not work with arrow functions. Do **not** use arrow functions for mongoose getters/setters unless do not intend to access the document in the getter/setter.
+Mongoose getters/setters depend on `this` to give you access to the document that you're writing to, but this functionality does not work with arrow functions. Do **not** use arrow functions for mongoose getters/setters unless you do not intend to access the document in the getter/setter.
 
 ```javascript
 // Do **NOT** use arrow functions as shown below unless you're certain
@@ -248,19 +267,22 @@ mongoose.set('debug', { color: false });
 
 // get mongodb-shell friendly output (ISODate)
 mongoose.set('debug', { shell: true });
+
+// prefix debug output with an ISO timestamp in brackets
+mongoose.set('debug', { timestamp: true });
 ```
 
 For more debugging options (streams, callbacks), see the ['debug' option under `.set()`](api/mongoose.html#mongoose_Mongoose-set).
 
 <hr id="callback_never_executes" />
 
-<a class="anchor" href="#callback_never_executes">**Q**</a>. My `save()` callback never executes. What am I doing wrong?
+<a class="anchor" href="#callback_never_executes">**Q**</a>. My `save()` operation never completes. What am I doing wrong?
 
 **A**. All `collection` actions (insert, remove, queries, etc.) are queued
 until Mongoose successfully connects to MongoDB. It is likely you haven't called Mongoose's
 `connect()` or `createConnection()` function yet.
 
-In Mongoose 5.11, there is a `bufferTimeoutMS` option (set to 10000 by default) that configures how long
+Mongoose connections support a `bufferTimeoutMS` option (set to 10000 by default) that configures how long
 Mongoose will allow an operation to stay buffered before throwing an error.
 
 If you want to opt out of Mongoose's buffering mechanism across your entire
@@ -408,13 +430,9 @@ mind that populate() will execute a separate query for each document.
 
 <a class="anchor" href="#duplicate-query">**Q**</a>. My query/update seems to execute twice. Why is this happening?
 
-**A**. The most common cause of duplicate queries is **mixing callbacks and promises with queries**.
-That's because passing a callback to a query function, like `find()` or `updateOne()`,
-immediately executes the query, and calling [`then()`](https://masteringjs.io/tutorials/fundamentals/then)
-executes the query again.
-
-Mixing promises and callbacks can lead to duplicate entries in arrays.
-For example, the below code inserts 2 entries into the `tags` array, **not* just 1.
+**A**. The most common cause of duplicate queries is **executing the same query object twice**.
+Calling [`then()`](https://masteringjs.io/tutorials/fundamentals/then) or `await` on the same query object
+multiple times will execute the query multiple times.
 
 ```javascript
 const BlogPost = mongoose.model('BlogPost', new Schema({
@@ -422,13 +440,62 @@ const BlogPost = mongoose.model('BlogPost', new Schema({
   tags: [String]
 }));
 
-// Because there's both `await` **and** a callback, this `updateOne()` executes twice
-// and thus pushes the same string into `tags` twice.
-const update = { $push: { tags: ['javascript'] } };
-await BlogPost.updateOne({ title: 'Introduction to Promises' }, update, (err, res) => {
-  console.log(res);
-});
+// This will throw 'Query was already executed' error
+const query = BlogPost.findOne({ title: 'Introduction to Promises' });
+await query;
+await query; // Error! Query already executed
+
+// To execute the same query twice, use clone()
+await query.clone(); // Works
 ```
+
+Note: Mongoose v7+ no longer supports callbacks. If you're seeing duplicate queries in older code,
+it may be due to mixing callbacks and promises, which is no longer possible in current versions.
+
+<hr id="divergent-array-error" />
+
+<a class="anchor" href="#divergent-array-error">**Q**</a>. What does `DivergentArrayError` mean and how do I fix it?
+
+**A**. Mongoose throws `DivergentArrayError` when you call `document.save()` to update an array that was only partially loaded, for example:
+
+* the array was selected using an `$elemMatch` projection
+* the array was populated using `populate()` with `skip`, `limit`, query conditions, or options that exclude `_id`
+* the save would result in MongoDB performing a `$set` or `$pop` of the entire array
+
+Because only part of the array is in memory, Mongoose can't safely reconstruct the full array to send back to MongoDB without risking data loss, so it throws `DivergentArrayError` instead.
+
+For example:
+
+```javascript
+const doc = await BlogPost.findOne(
+  { _id },
+  { comments: { $elemMatch: { flagged: true } } }
+);
+
+doc.comments[0].text = 'Updated';
+await doc.save(); 
+```
+
+To fix this error, either:
+
+(1) Load the full array before modifying and saving:
+
+```javascript
+const doc = await BlogPost.findById(_id); 
+doc.comments.id(commentId).text = 'Updated';
+await doc.save();
+```
+
+(2) Or use `updateOne()` / `updateMany()` with positional operators or `arrayFilters` so MongoDB can update the array atomically without requiring the full array on the document:
+
+```javascript
+await BlogPost.updateOne(
+  { _id, 'comments._id': commentId },
+  { $set: { 'comments.$.text': 'Updated' } }
+);
+```
+
+The same guidance applies if you populated an array with `skip`, `limit`, query conditions, or excluded `_id`: avoid calling `save()` to update that partially loaded array; instead, re-query without those options or use an update operation as shown above.
 
 <hr id="add_something" />
 

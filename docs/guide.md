@@ -1,7 +1,7 @@
 # Schemas
 
 If you haven't yet done so, please take a minute to read the [quickstart](index.html) to get an idea of how Mongoose works.
-If you are migrating from 7.x to 8.x please take a moment to read the [migration guide](migrating_to_8.html).
+If you are migrating from 8.x to 9.x please take a moment to read the [migration guide](migrating_to_9.html).
 
 <ul class="toc">
   <li><a href="#definition">Defining your schema</a></li>
@@ -205,7 +205,7 @@ dog.findSimilarTypes((err, dogs) => {
 ```
 
 * Overwriting a default mongoose document method may lead to unpredictable results. See [this](api/schema.html#schema_Schema-reserved) for more details.
-* The example above uses the `Schema.methods` object directly to save an instance method. You can also use the `Schema.method()` helper as described [here](api/schema.html#schema_Schema-method).
+* The example above uses the `Schema.methods` object directly to save an instance method. You can also use the [`Schema.method()` helper](api/schema.html#schema_Schema-method).
 * Do **not** declare methods using ES6 arrow functions (`=>`). Arrow functions [explicitly prevent binding `this`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions#No_binding_of_this), so your method will **not** have access to the document and the above examples will not work.
 
 ## Statics {#statics}
@@ -218,7 +218,6 @@ ways to add a static:
 * Call the [`Schema#static()` function](api/schema.html#schema_Schema-static)
 
 ```javascript
-
 // define a schema
 const animalSchema = new Schema({ name: String, type: String },
   {
@@ -252,7 +251,6 @@ but for mongoose queries. Query helper methods let you extend mongoose's
 [chainable query builder API](queries.html).
 
 ```javascript
-
 // define a schema
 const animalSchema = new Schema({ name: String, type: String },
   {
@@ -508,8 +506,25 @@ schemas and [subdocuments](subdocs.html), but you can also declare
 nested path aliases inline as long as you use the full nested path
 `nested.myProp` as the alias.
 
-```acquit
-[require:gh-6671]
+```javascript acquit:gh-6671
+const childSchema = new Schema({
+  n: {
+    type: String,
+    alias: 'name'
+  }
+}, { _id: false });
+
+const parentSchema = new Schema({
+  // If in a child schema, alias doesn't need to include the full nested path
+  c: childSchema,
+  name: {
+    f: {
+      type: String,
+      // Alias needs to include the full nested path if declared inline
+      alias: 'name.first'
+    }
+  }
+});
 ```
 
 ## Options {#options}
@@ -583,6 +598,12 @@ Clock.ensureIndexes(callback);
 
 The `autoIndex` option is set to `true` by default. You can change this
 default by setting [`mongoose.set('autoIndex', false);`](api/mongoose.html#mongoose_Mongoose-set)
+
+A common pattern is to disable `autoIndex` only in production:
+
+```javascript
+mongoose.set('autoIndex', process.env.NODE_ENV !== 'production');
+```
 
 ## option: autoCreate {#autoCreate}
 
@@ -827,8 +848,8 @@ The alias of each pref is also permitted so instead of having to type out
 The read option also allows us to specify *tag sets*. These tell the
 [driver](https://github.com/mongodb/node-mongodb-native/) from which members
 of the replica-set it should attempt to read. Read more about tag sets
-[here](http://www.mongodb.com/docs/manual/applications/replication/#tag-sets) and
-[here](https://www.mongodb.com/docs/manual/core/read-preference).
+in the [MongoDB documentation on replica set tag sets](http://www.mongodb.com/docs/manual/applications/replication/#tag-sets) and
+in the [MongoDB core documentation on read preference](https://www.mongodb.com/docs/manual/core/read-preference).
 
 *NOTE: you may also specify the driver read preference [strategy](https://www.mongodb.com/docs/manual/core/read-preference/#read-preference-modes)
 option when connecting:*
@@ -928,9 +949,9 @@ Mongoose supports a separate `strictQuery` option to avoid strict mode for query
 This is because empty query filters cause Mongoose to return all documents in the model, which can cause issues.
 
 ```javascript
-const mySchema = new Schema({ field: Number }, { strict: true });
+const mySchema = new Schema({ field: Number }, { strictQuery: true });
 const MyModel = mongoose.model('Test', mySchema);
-// Mongoose will filter out `notInSchema: 1` because `strict: true`, meaning this query will return
+// Mongoose will filter out `notInSchema: 1` because `strictQuery: true`, meaning this query will return
 // _all_ documents in the 'tests' collection
 MyModel.find({ notInSchema: 1 });
 ```
@@ -954,6 +975,24 @@ const mySchema = new Schema({ field: Number }, {
 const MyModel = mongoose.model('Test', mySchema);
 // Mongoose will not strip out `notInSchema: 1` because `strictQuery` is false
 MyModel.find({ notInSchema: 1 });
+```
+
+Note the difference between the two settings for filter paths that aren't in the schema.
+With `strictQuery: false`, Mongoose leaves the path in the filter as-is and does **not** cast the value.
+The server will only return documents where `notInSchema` is stored as `1`, so the query typically matches no documents.
+With `strictQuery: true`, Mongoose silently removes the path from the filter, so the query may match more documents than intended.
+With `strictQuery: 'throw'`, Mongoose throws a `StrictModeError` instead.
+
+```javascript
+await MyModel.create({ field: 42 });
+
+// Matches 0 documents with `strictQuery: false`, the default: Mongoose sends
+// `{ notInSchema: 1 }` to the server as-is, and no document has that property.
+await MyModel.find({ notInSchema: 1 });
+
+// Matches _all_ documents with `strictQuery: true`: Mongoose strips out
+// `notInSchema: 1`, leaving an empty filter `{}`.
+await MyModel.find({ notInSchema: 1 }).setOptions({ strictQuery: true });
 ```
 
 In general, we do **not** recommend passing user-defined objects as query filters:
@@ -1059,10 +1098,12 @@ schema.path('name').validate(function(value) {
 });
 const M = mongoose.model('Person', schema);
 const m = new M({ name: null });
-m.validate(function(err) {
+try {
+  await m.validate();
+} catch (err) {
   console.log(err); // Will tell you that null is not allowed.
-});
-m.save(); // Succeeds despite being invalid
+}
+await m.save(); // Succeeds despite being invalid
 ```
 
 ## option: versionKey {#versionKey}
@@ -1209,6 +1250,28 @@ house.status = 'APPROVED';
 await house.save();
 ```
 
+You can also set `optimisticConcurrency` to an array of field names to only use optimistic concurrency when one of those fields is modified.
+Note that setting `optimisticConcurrency` to an array of field names **replaces the default array versioning behavior**.
+For example, if you set `optimisticConcurrency: ['status']`, Mongoose will only throw a `VersionError` if `status` is modified concurrently, and will **not** throw a `VersionError` if an array like `photos` is modified concurrently.
+
+```javascript
+const House = mongoose.model('House', Schema({
+  status: String,
+  photos: [String]
+}, { optimisticConcurrency: ['status'] }));
+```
+
+You can also set `optimisticConcurrency` to an object with an `exclude` property to exclude certain fields from optimistic concurrency.
+This enables optimistic concurrency for all fields except the excluded fields, while still replacing default array versioning behavior.
+
+```javascript
+const House = mongoose.model('House', Schema({
+  status: String,
+  photos: [String],
+  rawResult: Object // Exclude from optimistic concurrency
+}, { optimisticConcurrency: { exclude: ['rawResult'] } }));
+```
+
 ## option: collation {#collation}
 
 Sets a default [collation](https://www.mongodb.com/docs/manual/reference/collation/)
@@ -1248,6 +1311,11 @@ const schema = Schema({ name: String, timestamp: Date, metadata: Object }, {
 
 // `Test` collection will be a timeseries collection
 const Test = db.model('Test', schema);
+// Explicitly create the collection if `autoCreate` is false. You need to
+// create the collection before using it - if you insert a document before
+// creating the collection, MongoDB will create a normal collection without
+// timeseries.
+await Test.createCollection();
 ```
 
 ## option: skipVersioning {#skipVersioning}
@@ -1458,15 +1526,41 @@ Similar to [`autoIndex`](#autoIndex), except for automatically creates any [Atla
 Unlike `autoIndex`, this option defaults to false.
 <!-- markdownlint-enable MD051 -->
 
+Mongoose supports both text search and vector search indexes.
+For text search, use `mappings` to define which fields to index.
+For vector search, set `type: 'vectorSearch'` and define vector fields.
+
 ```javascript
-const schema = new Schema({ name: String }, { autoSearchIndex: true });
+// Text search index
+const schema = new Schema({ name: String, description: String }, { autoSearchIndex: true });
 schema.searchIndex({
-  name: 'my-index',
+  name: 'text-search-index',
   definition: { mappings: { dynamic: true } }
 });
-// Will automatically attempt to create the `my-index` search index.
-const Test = mongoose.model('Test', schema);
+
+// Vector search index for semantic search
+const movieSchema = new Schema({
+  title: String,
+  plot_embedding: [Number]  // Vector embeddings
+}, { autoSearchIndex: true });
+
+movieSchema.searchIndex({
+  name: 'vector-search-index',
+  type: 'vectorSearch',
+  definition: {
+    fields: [{
+      type: 'vector',
+      path: 'plot_embedding',
+      numDimensions: 1536,  // Match your embedding model dimensions
+      similarity: 'cosine'
+    }]
+  }
+});
+// Will automatically attempt to create both search indexes.
+const Movie = mongoose.model('Movie', movieSchema);
 ```
+
+For more information, see our [Atlas Search](atlas-search.html) and [Atlas Vector Search](atlas-vector-search.html) guides.
 
 ## option: readConcern {#readConcern}
 

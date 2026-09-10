@@ -86,7 +86,7 @@ describe('Map', function() {
     assert.ok(threw);
   });
 
-  it('deep set', function(done) {
+  it('deep set', async function() {
     const userSchema = new mongoose.Schema({
       socialMediaHandles: {
         type: Schema.Types.Map,
@@ -102,8 +102,33 @@ describe('Map', function() {
 
     assert.equal(user.socialMediaHandles.get('github'), 'vkarpov15');
     assert.equal(user.get('socialMediaHandles.github'), 'vkarpov15');
+    await user.validate();
+  });
 
-    done();
+  it('handles required in maps', async function() {
+    const userSchema = new mongoose.Schema({
+      socialMediaHandles: {
+        type: Schema.Types.Map,
+        of: { type: String, required: true }
+      }
+    });
+
+    const User = db.model('Test', userSchema);
+
+    const user = new User({ socialMediaHandles: {} });
+    user.set('socialMediaHandles.github', null);
+    assert.strictEqual(user.socialMediaHandles.get('github'), null);
+    assert.strictEqual(user.get('socialMediaHandles.github'), null);
+    await assert.rejects(
+      user.validate(),
+      /socialMediaHandles.github: Path `socialMediaHandles.github` is required./
+    );
+
+    const user2 = new User({ socialMediaHandles: {} });
+    user2.set('socialMediaHandles.github', 'vkarpov15');
+    assert.equal(user2.socialMediaHandles.get('github'), 'vkarpov15');
+    assert.equal(user2.get('socialMediaHandles.github'), 'vkarpov15');
+    await user2.validate();
   });
 
   it('supports delete() (gh-7743)', async function() {
@@ -1178,5 +1203,786 @@ describe('Map', function() {
 
     doc1 = await Test.findOne({ _id: doc1._id }).lean();
     assert.deepStrictEqual(doc1.test_map, { key1: [] });
+  });
+
+  it('handles modifying array in map of primitives (gh-15350)', async function() {
+    const DocSchema = new mongoose.Schema({
+      map: {
+        type: Map,
+        of: [{ type: Number }],
+        default: new Map()
+      }
+    });
+    const Doc = db.model('Test', DocSchema);
+
+    const doc = await Doc.create({});
+    assert.ok(doc.map instanceof Map);
+    assert.equal(doc.map.size, 0);
+
+    doc.map.set('key', [1, 2]);
+    await doc.save();
+    assert.deepEqual(Array.from(doc.map.get('key')), [1, 2]);
+
+    const list = doc.map.get('key');
+    list.push(3);
+    assert.deepStrictEqual(doc.getChanges().$push, { 'map.key': { $each: [3] } });
+    await doc.save();
+
+    const fromDb = await Doc.findById(doc._id);
+    assert.deepEqual(Array.from(fromDb.map.get('key')), [1, 2, 3]);
+  });
+
+  it('handles maps of maps of numbers (gh-15350)', async function() {
+    const DocSchema = new mongoose.Schema({
+      map: {
+        type: Map,
+        of: {
+          type: Map,
+          of: Number
+        },
+        default: new Map()
+      }
+    });
+    const Doc = db.model('Test', DocSchema);
+
+    const doc = await Doc.create({});
+    assert.ok(doc.map instanceof Map);
+    assert.equal(doc.map.size, 0);
+
+    const innerMap = new Map();
+    innerMap.set('inner', 42);
+    doc.map.set('outer', innerMap);
+    await doc.save();
+
+    assert.equal(doc.map.get('outer').get('inner'), 42);
+
+    doc.map.get('outer').set('inner2', 43);
+    assert.deepStrictEqual(doc.getChanges(), { $set: { 'map.outer.inner2': 43 } });
+    await doc.save();
+
+    const fromDb = await Doc.findById(doc._id);
+    assert.equal(fromDb.map.get('outer').get('inner'), 42);
+    assert.equal(fromDb.map.get('outer').get('inner2'), 43);
+  });
+
+  it('handles deeply nested maps with numbers (gh-15447)', async function() {
+    // Arrange
+    const userSchema = new Schema({
+      a: {
+        b: {
+          c: {
+            type: Schema.Types.Map,
+            of: new Schema({
+              e: { type: Number, required: true }
+            })
+          }
+        }
+      }
+    });
+    const User = db.model('User', userSchema);
+
+    const user = new User({
+      a: {
+        b: {
+          c: {
+            d: {
+              e: 2
+            }
+          }
+        }
+      }
+    });
+
+    // Act
+    const error = await user.validate().then(() => null, err => err);
+
+    // Assert
+    assert.strictEqual(error, null);
+  });
+
+  it('handles deeply nested maps with even more nesting depth (gh-15447)', async function() {
+    // Arrange
+    const userSchema = new Schema({
+      a: {
+        b: {
+          c: {
+            d: {
+              type: Schema.Types.Map,
+              of: new Schema({
+                e: { type: String, required: true },
+                f: { type: Number, default: 100 }
+              })
+            }
+          }
+        }
+      }
+    });
+    const User = db.model('User', userSchema);
+
+    const user = new User({
+      a: {
+        b: {
+          c: {
+            d: {
+              item1: {
+                e: 'test string',
+                f: 42
+              },
+              item2: {
+                e: 'another string'
+                // f will use default value
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // Act
+    const error = await user.validate().then(() => null, err => err);
+
+    // Assert
+    assert.strictEqual(error, null);
+  });
+
+  it('throws an error when validation fails with nested maps', async function() {
+    // Arrange
+    const userSchema = new Schema({
+      a: {
+        b: {
+          c: {
+            type: Schema.Types.Map,
+            of: new Schema({
+              e: { type: Number, required: true }
+            })
+          }
+        }
+      }
+    });
+    const User = db.model('User', userSchema);
+
+    const user = new User({
+      a: { b: { c: { d: { } } } }
+    });
+
+    // Act
+    const error = await user.validate().then(() => null, err => err);
+
+    // Assert
+    assert.ok(error);
+    assert.strictEqual(error.errors['a.b.c.d.e'].message.includes('Path `e`'), true);
+  });
+
+  it('handles setting then unsetting the same map (gh-15519)', async function() {
+    const debugSchema = new Schema({
+      settings: {
+        type: Map,
+        of: String
+      }
+    });
+
+    const Debug = db.model('Test', debugSchema);
+    const empty = new Debug();
+    await empty.save();
+
+    let doc = await Debug.findById(empty._id);
+    doc.settings = new Map();
+
+    doc.settings.set('test', 'value');
+
+    doc.settings = undefined;
+    assert.deepStrictEqual(doc.getChanges(), { $unset: { settings: 1 } });
+
+    await doc.save();
+
+    // reload and check settings is undefined
+    doc = await Debug.findById(empty._id);
+    assert.strictEqual(doc.settings, undefined);
+  });
+
+  it('handles setting then unsetting the same map of subdocs with a required field (gh-15519)', async function() {
+    const debugSchema = new Schema({
+      settings: {
+        type: Map,
+        of: new Schema({
+          value: { type: String, required: true }
+        }, { _id: false })
+      }
+    });
+
+    const Debug = db.model('Test', debugSchema);
+    const empty = new Debug();
+    await empty.save();
+
+    let doc = await Debug.findById(empty._id);
+    doc.settings = new Map();
+
+    doc.settings.set('test', { value: 'abc' });
+
+    doc.settings = undefined;
+    assert.deepStrictEqual(doc.getChanges(), { $unset: { settings: 1 } });
+
+    // Should not throw, even though the subdoc has a required field
+    await doc.save();
+
+    // reload and check settings is undefined
+    doc = await Debug.findById(empty._id);
+    assert.strictEqual(doc.settings, undefined);
+  });
+
+  it('handles maps with document arrays and maps of maps with document arrays (gh-15678)', async function() {
+    const itemSchema = new Schema({
+      name: String,
+      itemNum: Number,
+      itemTags: [String]
+    }, { _id: false });
+
+    const groupSchema = new Schema({
+      items: { type: Map, of: itemSchema, default: {} },
+      groupNum: Number,
+      groupTags: [String]
+    }, { _id: false });
+
+    const parentSchema = new Schema({
+      groups: { type: Map, of: groupSchema, default: {} }
+    });
+
+    const M = db.model('Test', parentSchema);
+
+    // as if read from M.findOne() etc
+    const x = new M().init({
+      groups: {
+        g1: {
+          items: {
+            i1: {
+              name: 'my item'
+            }
+          },
+          groupTags: ['hi']
+        }
+      }
+    });
+
+    // after each test below in isolation (others commented)
+    // console.log(x.getChanges())
+
+    x.groups.get('g1').items.set('i2', { name: 'second item' });
+    assert.deepStrictEqual(x.getChanges(), {
+      $set: { 'groups.g1.items.i2': { name: 'second item', itemTags: [] } }
+    });
+
+    x.groups.get('g1').groupNum = 42;
+    assert.deepStrictEqual(x.getChanges(), {
+      $set: {
+        'groups.g1.items.i2': { name: 'second item', itemTags: [] },
+        'groups.g1.groupNum': 42
+      }
+    }
+    );
+
+    x.groups.get('g1').items.get('i1').name = 'different item';
+    assert.deepStrictEqual(x.getChanges(), {
+      $set: {
+        'groups.g1.items.i2': { name: 'second item', itemTags: [] },
+        'groups.g1.groupNum': 42,
+        'groups.g1.items.i1.name': 'different item'
+      }
+    }
+    );
+
+    x.groups.get('g1').items.get('i1').itemNum = 20;
+    assert.deepStrictEqual(x.getChanges(), {
+      $set: {
+        'groups.g1.items.i2': { name: 'second item', itemTags: [] },
+        'groups.g1.groupNum': 42,
+        'groups.g1.items.i1.name': 'different item',
+        'groups.g1.items.i1.itemNum': 20
+      }
+    }
+    );
+
+    x.groups.get('g1').items.get('i1').itemTags.push('foo');
+    assert.deepStrictEqual(x.getChanges(), {
+      $inc: { __v: 1 },
+      $push: {
+        'groups.g1.items.i1.itemTags': { $each: ['foo'] }
+      },
+      $set: {
+        'groups.g1.items.i2': { name: 'second item', itemTags: [] },
+        'groups.g1.groupNum': 42,
+        'groups.g1.items.i1.itemNum': 20,
+        'groups.g1.items.i1.name': 'different item'
+      }
+    });
+  });
+
+  it('handles push() on arrays in subdocuments and maps correctly (gh-15678)', async function() {
+    const itemSchema = new Schema({
+      numField: Number,
+      arrayField: [String]
+    }, { _id: false });
+
+    const groupSchema = new Schema({
+      items: { type: Map, of: itemSchema },
+      numField: Number,
+      arrayField: [String]
+    }, { _id: false });
+
+    const parentSchema = new Schema({
+      groups: { type: Map, of: groupSchema },
+      singleItem: { type: itemSchema }
+    });
+
+    const M = db.model('Test', parentSchema);
+
+    const x = new M().init({
+      groups: {
+        g1: {
+          items: {
+            i1: {
+              numField: 1,
+              arrayField: ['a']
+            }
+          },
+          numField: 2,
+          arrayField: ['b']
+        }
+      },
+      singleItem: {
+        numField: 3,
+        arrayField: ['c']
+      }
+    });
+
+    // Test 1: push to singleItem.arrayField should use $push, not $set on entire subdoc
+    x.singleItem.arrayField.push('val1');
+    assert.deepStrictEqual(x.getChanges(), {
+      $push: { 'singleItem.arrayField': { $each: ['val1'] } },
+      $inc: { __v: 1 }
+    });
+
+    // Test 2: push to groups.g1.arrayField should use $push, not $set on entire subdoc
+    x.groups.get('g1').arrayField.push('val2');
+    assert.deepStrictEqual(x.getChanges(), {
+      $push: {
+        'singleItem.arrayField': { $each: ['val1'] },
+        'groups.g1.arrayField': { $each: ['val2'] }
+      },
+      $inc: { __v: 1 }
+    });
+
+    // Test 3: push to groups.g1.items.i1.arrayField should use $push
+    x.groups.get('g1').items.get('i1').arrayField.push('val3');
+    assert.deepStrictEqual(x.getChanges(), {
+      $push: {
+        'singleItem.arrayField': { $each: ['val1'] },
+        'groups.g1.arrayField': { $each: ['val2'] },
+        'groups.g1.items.i1.arrayField': { $each: ['val3'] }
+      },
+      $inc: { __v: 1 }
+    });
+
+    // Test 4: pull from singleItem.arrayField
+    x.singleItem.arrayField.pull('c');
+    assert.deepStrictEqual(x.getChanges(), {
+      $set: { 'singleItem.arrayField': ['val1'] },
+      $push: {
+        'groups.g1.arrayField': { $each: ['val2'] },
+        'groups.g1.items.i1.arrayField': { $each: ['val3'] }
+      },
+      $inc: { __v: 1 }
+    });
+  });
+
+  it('handles various array operations on subdocument arrays correctly (gh-15678)', async function() {
+    const itemSchema = new Schema({
+      tags: [String]
+    }, { _id: false });
+
+    const schema = new Schema({
+      items: { type: Map, of: itemSchema },
+      directItem: itemSchema
+    });
+
+    const M = db.model('Test', schema);
+
+    // Test non-atomic operations (pop, shift, unshift, splice) fall back to $set
+    const doc1 = new M().init({
+      items: { i1: { tags: ['a', 'b', 'c'] } },
+      directItem: { tags: ['x', 'y', 'z'] }
+    });
+
+    // pop() should use $set
+    doc1.items.get('i1').tags.pop();
+    assert.deepStrictEqual(doc1.getChanges(), {
+      $set: { 'items.i1.tags': ['a', 'b'] },
+      $inc: { __v: 1 }
+    });
+
+    // shift() should use $set
+    const doc2 = new M().init({
+      items: { i1: { tags: ['a', 'b', 'c'] } }
+    });
+    doc2.items.get('i1').tags.shift();
+    assert.deepStrictEqual(doc2.getChanges(), {
+      $set: { 'items.i1.tags': ['b', 'c'] },
+      $inc: { __v: 1 }
+    });
+
+    // unshift() should use $set
+    const doc3 = new M().init({
+      items: { i1: { tags: ['a', 'b'] } }
+    });
+    doc3.items.get('i1').tags.unshift('z');
+    assert.deepStrictEqual(doc3.getChanges(), {
+      $set: { 'items.i1.tags': ['z', 'a', 'b'] },
+      $inc: { __v: 1 }
+    });
+
+    // splice() should use $set
+    const doc4 = new M().init({
+      items: { i1: { tags: ['a', 'b', 'c'] } }
+    });
+    doc4.items.get('i1').tags.splice(1, 1);
+    assert.deepStrictEqual(doc4.getChanges(), {
+      $set: { 'items.i1.tags': ['a', 'c'] },
+      $inc: { __v: 1 }
+    });
+
+    // addToSet() should use $addToSet
+    const doc5 = new M().init({
+      items: { i1: { tags: ['a', 'b'] } }
+    });
+    doc5.items.get('i1').tags.addToSet('c');
+    assert.deepStrictEqual(doc5.getChanges(), {
+      $addToSet: { 'items.i1.tags': { $each: ['c'] } },
+      $inc: { __v: 1 }
+    });
+
+    // Test direct subdocument (not in map)
+    const doc6 = new M().init({
+      directItem: { tags: ['x', 'y'] }
+    });
+    doc6.directItem.tags.push('z');
+    assert.deepStrictEqual(doc6.getChanges(), {
+      $push: { 'directItem.tags': { $each: ['z'] } },
+      $inc: { __v: 1 }
+    });
+
+    // Test mixing operations: push is atomic, then pop makes it $set
+    const doc7 = new M().init({
+      items: { i1: { tags: ['a', 'b'] } }
+    });
+    doc7.items.get('i1').tags.push('c');
+    let changes = doc7.getChanges();
+    assert.ok(changes.$push);
+    assert.deepStrictEqual(changes.$push['items.i1.tags'], { $each: ['c'] });
+
+    doc7.items.get('i1').tags.pop();
+    changes = doc7.getChanges();
+    // After pop(), should fall back to $set
+    assert.deepStrictEqual(changes, {
+      $set: { 'items.i1.tags': ['a', 'b'] },
+      $inc: { __v: 1 }
+    });
+  });
+
+  it('handles empty arrays and save/reload for subdocument arrays (gh-15678)', async function() {
+    const itemSchema = new Schema({
+      tags: [String]
+    }, { _id: false });
+
+    const schema = new Schema({
+      items: { type: Map, of: itemSchema }
+    });
+
+    const M = db.model('Test', schema);
+
+    // Test with empty array
+    const doc = await M.create({
+      items: new Map([['i1', { tags: [] }]])
+    });
+
+    doc.items.get('i1').tags.push('first');
+    assert.deepStrictEqual(doc.getChanges(), {
+      $push: { 'items.i1.tags': { $each: ['first'] } },
+      $inc: { __v: 1 }
+    });
+
+    await doc.save();
+
+    // After save, changes should be cleared
+    assert.deepStrictEqual(doc.getChanges(), {});
+
+    // Reload and modify again
+    const reloaded = await M.findById(doc._id);
+    assert.deepStrictEqual(Array.from(reloaded.items.get('i1').tags), ['first']);
+
+    reloaded.items.get('i1').tags.push('second');
+    assert.deepStrictEqual(reloaded.getChanges(), {
+      $push: { 'items.i1.tags': { $each: ['second'] } },
+      $inc: { __v: 1 }
+    });
+
+    await reloaded.save();
+
+    const final = await M.findById(doc._id);
+    assert.deepStrictEqual(Array.from(final.items.get('i1').tags), ['first', 'second']);
+  });
+
+  it('handles map of subdocument with map of arrays (gh-15678)', async function() {
+    // Map -> Subdoc -> Map -> Array
+    const innerSchema = new Schema({
+      lists: { type: Map, of: [String] },
+      name: String
+    }, { _id: false });
+
+    const outerSchema = new Schema({
+      containers: { type: Map, of: innerSchema }
+    });
+
+    const M = db.model('Test', outerSchema);
+
+    const doc = new M().init({
+      containers: {
+        c1: {
+          name: 'container1',
+          lists: {
+            list1: ['a', 'b'],
+            list2: ['x', 'y']
+          }
+        }
+      }
+    });
+
+    // Push to array in map within subdoc within map
+    doc.containers.get('c1').lists.get('list1').push('c');
+    assert.deepStrictEqual(doc.getChanges(), {
+      $push: { 'containers.c1.lists.list1': { $each: ['c'] } },
+      $inc: { __v: 1 }
+    });
+
+    // Push to different array in same nested structure
+    doc.containers.get('c1').lists.get('list2').push('z');
+    assert.deepStrictEqual(doc.getChanges(), {
+      $push: {
+        'containers.c1.lists.list1': { $each: ['c'] },
+        'containers.c1.lists.list2': { $each: ['z'] }
+      },
+      $inc: { __v: 1 }
+    });
+
+    // Modify subdoc scalar field alongside array operations
+    doc.containers.get('c1').name = 'updated';
+    assert.deepStrictEqual(doc.getChanges(), {
+      $push: {
+        'containers.c1.lists.list1': { $each: ['c'] },
+        'containers.c1.lists.list2': { $each: ['z'] }
+      },
+      $set: {
+        'containers.c1.name': 'updated'
+      },
+      $inc: { __v: 1 }
+    });
+
+    // Test with element modification instead of push
+    const doc2 = new M().init({
+      containers: {
+        c1: {
+          lists: {
+            list1: ['a', 'b', 'c']
+          }
+        }
+      }
+    });
+
+    doc2.containers.get('c1').lists.get('list1').set(1, 'modified');
+    assert.deepStrictEqual(doc2.getChanges(), {
+      $set: { 'containers.c1.lists.list1.1': 'modified' }
+    });
+
+    // Test pop on deeply nested array
+    const doc3 = new M().init({
+      containers: {
+        c1: {
+          lists: {
+            list1: ['a', 'b', 'c']
+          }
+        }
+      }
+    });
+
+    doc3.containers.get('c1').lists.get('list1').pop();
+    assert.deepStrictEqual(doc3.getChanges(), {
+      $set: { 'containers.c1.lists.list1': ['a', 'b'] },
+      $inc: { __v: 1 }
+    });
+  });
+
+  describe('nested map subdocuments loaded via init() (gh-15957) (gh-15969)', function() {
+    it('fails validation for invalid data (gh-15957)', async function() {
+      // Arrange
+      const { company } = createTestContext({ employeeNameMinLength: 2, employeeName: 'X' });
+
+      // Act
+      const error = await company.validate().then(() => null, err => err);
+
+      // Assert
+      assert.ok(error);
+      assert.ok(error.errors['teams.engineering.employees.X.name']);
+    });
+
+    it('passes validation for valid data (gh-15957)', async function() {
+      // Arrange
+      const { company } = createTestContext({ employeeNameMinLength: 2, employeeName: 'John' });
+
+      // Act
+      const error = await company.validate().then(() => null, err => err);
+
+      // Assert
+      assert.strictEqual(error, null);
+    });
+
+    it('works with validateSync() (gh-15957)', function() {
+      // Arrange
+      const { company } = createTestContext({ employeeNameMinLength: 2, employeeName: 'X' });
+
+      // Act
+      const error = company.validateSync();
+
+      // Assert
+      assert.ok(error);
+      assert.ok(error.errors['teams.engineering.employees.X.name']);
+    });
+
+    it('deleteOne() removes subdocument from nested map and tracks change (gh-15969)', function() {
+      // Arrange
+      const { company } = createTestContext();
+      const john = company.teams.get('engineering').employees.get('john');
+
+      // Act
+      john.deleteOne();
+
+      // Assert
+      assert.strictEqual(company.teams.get('engineering').employees.get('john'), null);
+      assert.deepStrictEqual(company.getChanges(), {
+        $set: { 'teams.engineering.employees.john': null }
+      });
+    });
+
+    it('clear() on nested map produces correct update path (gh-15969)', function() {
+      // Arrange
+      const { company } = createTestContext();
+      const employeesMap = company.teams.get('engineering').employees;
+
+      // Act
+      employeesMap.clear();
+
+      // Assert
+      assert.strictEqual(employeesMap.size, 0);
+      assert.deepStrictEqual(company.getChanges(), {
+        $set: { 'teams.engineering.employees': new Map() }
+      });
+    });
+
+    function createTestContext({ employeeNameMinLength, employeeName = 'john' } = {}) {
+      const employeeSchema = new Schema({
+        name: { type: String, minlength: employeeNameMinLength }
+      });
+      const teamSchema = new Schema({
+        employees: { type: Map, of: employeeSchema }
+      });
+      const companySchema = new Schema({
+        teams: { type: Map, of: teamSchema }
+      });
+
+      const Company = db.model('Company', companySchema);
+
+      const company = new Company();
+      company.init({
+        _id: new mongoose.Types.ObjectId(),
+        teams: {
+          engineering: {
+            employees: {
+              [employeeName]: { name: employeeName },
+              sarah: { name: 'Sarah' }
+            }
+          }
+        }
+      });
+
+      return { Company, company };
+    }
+  });
+
+  describe('nested Maps inside DocumentArray elements loaded via init() (gh-15678)', function() {
+    it('map.set() on a Map inside a DocumentArray element produces correct paths', function() {
+      // Arrange
+      const { company } = createTestContext();
+
+      // Act
+      company.events.get('techConf')[0].ratings.set('content', 5);
+
+      // Assert
+      assert.deepStrictEqual(company.getChanges(), {
+        $set: { 'events.techConf.0.ratings.content': 5 }
+      });
+    });
+
+    it('map.set() with subdocument value inside a DocumentArray element produces correct paths', function() {
+      // Arrange
+      const { company } = createTestContext();
+
+      // Act
+      company.events.get('techConf')[0].speakers.set('panelist', { name: 'Bob' });
+
+      // Assert
+      assert.deepStrictEqual(company.getChanges(), {
+        $set: { 'events.techConf.0.speakers.panelist': { name: 'Bob' } }
+      });
+    });
+
+    it('validation reports correct paths for nested Maps inside DocumentArray elements', async function() {
+      // Arrange
+      const { company } = createTestContext({ speakerNameMinLength: 2 });
+
+      // Act
+      company.events.get('techConf')[0].speakers.set('guest', { name: 'X' });
+      const error = await company.validate().then(() => null, err => err);
+
+      // Assert
+      assert.ok(error);
+      assert.ok(error.errors['events.techConf.0.speakers.guest.name']);
+    });
+
+    function createTestContext({ speakerNameMinLength } = {}) {
+      const speakerSchema = new Schema({
+        name: { type: String, minlength: speakerNameMinLength }
+      }, { _id: false });
+
+      const sessionSchema = new Schema({
+        title: String,
+        speakers: { type: Map, of: speakerSchema },
+        ratings: { type: Map, of: Number }
+      }, { _id: false });
+
+      const companySchema = new Schema({
+        events: { type: Map, of: [sessionSchema] }
+      });
+
+      const Company = db.model('Company', companySchema);
+
+      const company = new Company();
+      company.init({
+        _id: new mongoose.Types.ObjectId(),
+        events: {
+          techConf: [
+            { title: 'Keynote', speakers: { host: { name: 'Alice' } }, ratings: { overall: 4 } }
+          ]
+        }
+      });
+
+      return { Company, company };
+    }
   });
 });

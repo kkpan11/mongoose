@@ -28,6 +28,9 @@ const schema = new Schema(
 );
 ```
 
+If you are using automatic schema inference, you should define virtuals using the `virtuals` option in the schema constructor as shown above.
+Mongoose will not automatically infer any virtuals you define using `Schema.prototype.virtual()`.
+
 Note that Mongoose does **not** include virtuals in the returned type from `InferSchemaType`.
 That is because `InferSchemaType` returns a value similar to the raw document interface, which represents the structure of the data stored in MongoDB.
 
@@ -72,9 +75,9 @@ interface UserVirtuals {
   fullName: string;
 }
 
-type UserModel = Model<UserDoc, {}, UserVirtuals>; // <-- add virtuals here...
+type UserModelType = Model<UserDoc, {}, {}, UserVirtuals>; // <-- add virtuals here...
 
-const schema = new Schema<UserDoc, UserModel, UserVirtuals>({ // <-- and here
+const schema = new Schema<UserDoc, UserModelType, {}, {}, UserVirtuals>({ // <-- and here
   firstName: String,
   lastName: String
 });
@@ -83,6 +86,9 @@ schema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName}`;
 });
 ```
+
+If you explicitly define the `UserVirtuals` interface, you should define your virtuals using `schema.virtual()` as shown above.
+We recommend `schema.virtual()` over the `virtuals` option to the Schema constructor shown in the Automatically Inferred Types section above because the `virtuals` option won't allow you to access other virtuals on `this`.
 
 ## Override the Type of `this` in Your Virtual
 

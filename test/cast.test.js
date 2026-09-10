@@ -9,7 +9,7 @@ require('./common');
 const Schema = require('../lib/schema');
 const assert = require('assert');
 const cast = require('../lib/cast');
-const ObjectId = require('bson').ObjectId;
+const ObjectId = require('mongodb/lib/bson').ObjectId;
 
 describe('cast: ', function() {
   describe('when casting an array', function() {
@@ -101,6 +101,26 @@ describe('cast: ', function() {
           $all: [{ $elemMatch: { _id: 42 } }]
         }
       });
+    });
+  });
+
+  describe('geo queries', function() {
+    it('casts object-shaped geo values with scalar leaves (gh-16376)', function() {
+      const schema = new Schema({ name: String });
+
+      const res = cast(schema, {
+        loc: { $geoIntersects: { foo: '5' } }
+      }, { strictQuery: false });
+      assert.strictEqual(res.loc.$geoIntersects.foo, 5);
+    });
+
+    it('still casts array-shaped geo values (gh-16376)', function() {
+      const schema = new Schema({ name: String });
+
+      const res = cast(schema, {
+        loc: { $geoIntersects: { coordinates: ['1', '2'] } }
+      }, { strictQuery: false });
+      assert.deepStrictEqual(res.loc.$geoIntersects.coordinates, [1, 2]);
     });
   });
 

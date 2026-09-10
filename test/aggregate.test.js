@@ -618,7 +618,7 @@ describe('aggregate: ', function() {
 
   describe('exec', function() {
     beforeEach(async function() {
-      this.timeout(4000); // double the default of 2 seconds
+      this.timeout(15000);
       await setupData(db);
     });
 
@@ -815,14 +815,26 @@ describe('aggregate: ', function() {
       assert.deepEqual(pipeline, [{ $match: { sal: { $lt: 16000 } } }]);
     });
 
+    it('pipelineForUnionWith() returns pipeline for valid unionWith subpipeline', function() {
+      const aggregate = new Aggregate();
+
+      const pipeline = aggregate.
+        match({ sal: { $lt: 16000 } }).
+        pipelineForUnionWith();
+
+      assert.deepEqual(pipeline, [{ $match: { sal: { $lt: 16000 } } }]);
+    });
+
+    it('pipelineForUnionWith() throws if pipeline contains $out or $merge', function() {
+      const aggregateWithOut = new Aggregate().append({ $match: { sal: { $lt: 16000 } } }, { $out: 'test' });
+      assert.throws(() => aggregateWithOut.pipelineForUnionWith(), /cannot include `\$out` or `\$merge`/);
+
+      const aggregateWithMerge = new Aggregate().append({ $match: { sal: { $lt: 16000 } } }, { $merge: { into: 'test' } });
+      assert.throws(() => aggregateWithMerge.pipelineForUnionWith(), /cannot include `\$out` or `\$merge`/);
+    });
+
     it('explain()', async function() {
       const aggregate = new Aggregate([], db.model('Employee'));
-      const version = await start.mongodVersion();
-
-      const mongo26 = version[0] > 2 || (version[0] === 2 && version[1] >= 6);
-      if (!mongo26) {
-        return;
-      }
 
       const output = await aggregate.
         match({ sal: { $lt: 16000 } }).
@@ -868,16 +880,13 @@ describe('aggregate: ', function() {
       const match = { $match: { sal: { $gt: 15000 } } };
       const pref = 'primaryPreferred';
       const aggregate = m.aggregate([match]).read(pref);
-      const mongo26_or_greater = version[0] > 2 || (version[0] === 2 && version[1] >= 6);
       const mongo32_or_greater = version[0] > 3 || (version[0] === 3 && version[1] >= 2);
 
       assert.equal(aggregate.options.readPreference.mode, pref);
-      if (mongo26_or_greater) {
-        aggregate.allowDiskUse(true);
-        aggregate.option({ maxTimeMS: 1000 });
-        assert.equal(aggregate.options.allowDiskUse, true);
-        assert.equal(aggregate.options.maxTimeMS, 1000);
-      }
+      aggregate.allowDiskUse(true);
+      aggregate.option({ maxTimeMS: 1000 });
+      assert.equal(aggregate.options.allowDiskUse, true);
+      assert.equal(aggregate.options.maxTimeMS, 1000);
 
       if (mongo32_or_greater) {
         aggregate.readConcern('m');
@@ -895,9 +904,9 @@ describe('aggregate: ', function() {
         const s = new Schema({ name: String });
 
         let called = 0;
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++called;
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
@@ -911,9 +920,9 @@ describe('aggregate: ', function() {
       it('setting option in pre (gh-7606)', async function() {
         const s = new Schema({ name: String });
 
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           this.options.collation = { locale: 'en_US', strength: 1 };
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
@@ -929,9 +938,9 @@ describe('aggregate: ', function() {
       it('adding to pipeline in pre (gh-8017)', async function() {
         const s = new Schema({ name: String });
 
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           this.append({ $limit: 1 });
-          next();
+          return Promise.resolve();
         });
 
         const M = db.model('Test', s);
@@ -989,8 +998,8 @@ describe('aggregate: ', function() {
         const s = new Schema({ name: String });
 
         const calledWith = [];
-        s.pre('aggregate', function(next) {
-          next(new Error('woops'));
+        s.pre('aggregate', function() {
+          throw new Error('woops');
         });
         s.post('aggregate', function(error, res, next) {
           calledWith.push(error);
@@ -1012,9 +1021,9 @@ describe('aggregate: ', function() {
 
         let calledPre = 0;
         let calledPost = 0;
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++calledPre;
-          next();
+          return Promise.resolve();
         });
         s.post('aggregate', function(res, next) {
           ++calledPost;
@@ -1039,9 +1048,9 @@ describe('aggregate: ', function() {
 
         let calledPre = 0;
         const calledPost = [];
-        s.pre('aggregate', function(next) {
+        s.pre('aggregate', function() {
           ++calledPre;
-          next();
+          return Promise.resolve();
         });
         s.post('aggregate', function(res, next) {
           calledPost.push(res);
@@ -1100,6 +1109,30 @@ describe('aggregate: ', function() {
       aggregate([{ $match: { name: 'test' } }]).
       cursor();
     assert.ok(cursor instanceof require('stream').Readable);
+  });
+
+  it('cursor() buffers aggregate cursor creation until connection opens', async function() {
+    const collectionName = 'aggregate_cursor_buffering';
+    const schema = new Schema({ name: String });
+    const Seed = db.model('Seed', schema, collectionName);
+
+    await Seed.deleteMany({});
+    await Seed.create([{ name: 'Axl' }, { name: 'Slash' }]);
+
+    const conn = mongoose.createConnection();
+    try {
+      const Test = conn.model('Test', schema, collectionName);
+      const cursor = Test.aggregate([{ $sort: { name: 1 } }]).cursor();
+      const docPromise = cursor.next();
+
+      await conn.openUri(start.uri);
+      const doc = await docPromise;
+
+      assert.equal(doc.name, 'Axl');
+      assert.equal(typeof cursor.cursor.next, 'function');
+    } finally {
+      await conn.close();
+    }
   });
 
   it('cursor() with useMongooseAggCursor (gh-5145)', function() {
@@ -1304,11 +1337,10 @@ describe('aggregate: ', function() {
   it('cursor() errors out if schema pre aggregate hook throws an error (gh-15279)', async function() {
     const schema = new Schema({ name: String });
 
-    schema.pre('aggregate', function(next) {
+    schema.pre('aggregate', function() {
       if (!this.options.allowed) {
         throw new Error('Unauthorized aggregate operation: only allowed operations are permitted');
       }
-      next();
     });
 
     const Test = db.model('Test', schema);

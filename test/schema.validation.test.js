@@ -16,7 +16,6 @@ const ValidatorError = mongoose.Error.ValidatorError;
 const SchemaTypes = Schema.Types;
 const ObjectId = SchemaTypes.ObjectId;
 const Mixed = SchemaTypes.Mixed;
-const DocumentObjectId = mongoose.Types.ObjectId;
 
 describe('schema', function() {
   describe('validation', function() {
@@ -48,7 +47,7 @@ describe('schema', function() {
       done();
     });
 
-    it('string enum', function(done) {
+    it('string enum', async function() {
       const Test = new Schema({
         complex: { type: String, enum: ['a', 'b', undefined, 'c', null] },
         state: { type: String }
@@ -71,92 +70,108 @@ describe('schema', function() {
       assert.equal(Test.path('state').validators.length, 1);
       assert.deepEqual(Test.path('state').enumValues, ['opening', 'open', 'closing', 'closed']);
 
-      Test.path('complex').doValidate('x', function(err) {
-        assert.ok(err instanceof ValidatorError);
-      });
+      await assert.rejects(Test.path('complex').doValidate('x'), ValidatorError);
 
       // allow unsetting enums
-      Test.path('complex').doValidate(undefined, function(err) {
-        assert.ifError(err);
-      });
+      await Test.path('complex').doValidate(undefined);
 
-      Test.path('complex').doValidate(null, function(err) {
-        assert.ifError(err);
-      });
+      await Test.path('complex').doValidate(null);
 
-      Test.path('complex').doValidate('da', function(err) {
-        assert.ok(err instanceof ValidatorError);
-      });
+      await assert.rejects(
+        Test.path('complex').doValidate('da'),
+        ValidatorError
+      );
 
-      Test.path('state').doValidate('x', function(err) {
-        assert.ok(err instanceof ValidatorError);
-        assert.equal(err.message,
-          'enum validator failed for path `state`: test');
-      });
+      await assert.rejects(
+        Test.path('state').doValidate('x'),
+        err => {
+          assert.ok(err instanceof ValidatorError);
+          assert.equal(err.message,
+            'enum validator failed for path `state`: test');
+          return true;
+        }
+      );
 
-      Test.path('state').doValidate('opening', function(err) {
-        assert.ifError(err);
-      });
+      await Test.path('state').doValidate('opening');
 
-      Test.path('state').doValidate('open', function(err) {
-        assert.ifError(err);
-      });
-
-      done();
+      await Test.path('state').doValidate('open');
     });
 
-    it('string regexp', function(done) {
-      let remaining = 10;
+    it('number enum', async function() {
+      const Test = new Schema({
+        status: { type: Number, enum: [1, 2, 3, null] },
+        priority: { type: Number }
+      });
+
+      assert.ok(Test.path('status') instanceof SchemaTypes.Number);
+      assert.deepEqual(Test.path('status').enumValues, [1, 2, 3, null]);
+      assert.equal(Test.path('status').validators.length, 1);
+
+      Test.path('status').enum(4, 5);
+
+      assert.deepEqual(Test.path('status').enumValues, [1, 2, 3, null, 4, 5]);
+
+      // with SchemaTypes validate method
+      Test.path('priority').enum({
+        values: [10, 20, 30],
+        message: 'enum validator failed for path `{PATH}`: test'
+      });
+
+      assert.equal(Test.path('priority').validators.length, 1);
+      assert.deepEqual(Test.path('priority').enumValues, [10, 20, 30]);
+
+      await assert.rejects(Test.path('status').doValidate(6), ValidatorError);
+
+      // allow unsetting enums
+      await Test.path('status').doValidate(undefined);
+
+      await Test.path('status').doValidate(null);
+
+      await assert.rejects(
+        Test.path('status').doValidate(99),
+        ValidatorError
+      );
+
+      await assert.rejects(
+        Test.path('priority').doValidate(40),
+        err => {
+          assert.ok(err instanceof ValidatorError);
+          assert.equal(err.message,
+            'enum validator failed for path `priority`: test');
+          return true;
+        }
+      );
+
+      await Test.path('status').doValidate(1);
+
+      await Test.path('status').doValidate(2);
+    });
+
+    it('string regexp', async function() {
       const Test = new Schema({
         simple: { type: String, match: /[a-z]/ }
       });
 
       assert.equal(Test.path('simple').validators.length, 1);
 
-      Test.path('simple').doValidate('az', function(err) {
-        assert.ifError(err);
-        --remaining || done();
-      });
+      await Test.path('simple').doValidate('az');
 
       Test.path('simple').match(/[0-9]/);
       assert.equal(Test.path('simple').validators.length, 2);
 
-      Test.path('simple').doValidate('12', function(err) {
-        assert.ok(err instanceof ValidatorError);
-        --remaining || done();
-      });
+      await assert.rejects(Test.path('simple').doValidate('12'), ValidatorError);
 
-      Test.path('simple').doValidate('a12', function(err) {
-        assert.ifError(err);
-        --remaining || done();
-      });
+      await Test.path('simple').doValidate('a12');
 
-      Test.path('simple').doValidate('', function(err) {
-        assert.ifError(err);
-        --remaining || done();
-      });
-      Test.path('simple').doValidate(null, function(err) {
-        assert.ifError(err);
-        --remaining || done();
-      });
-      Test.path('simple').doValidate(undefined, function(err) {
-        assert.ifError(err);
-        --remaining || done();
-      });
+      await Test.path('simple').doValidate('');
+      await Test.path('simple').doValidate(null);
+      await Test.path('simple').doValidate(undefined);
       Test.path('simple').validators = [];
       Test.path('simple').match(/[1-9]/);
-      Test.path('simple').doValidate(0, function(err) {
-        assert.ok(err instanceof ValidatorError);
-        --remaining || done();
-      });
+      await assert.rejects(Test.path('simple').doValidate(0), ValidatorError);
 
       Test.path('simple').match(null);
-      Test.path('simple').doValidate(0, function(err) {
-        assert.ok(err instanceof ValidatorError);
-        --remaining || done();
-      });
-
-      done();
+      await assert.rejects(Test.path('simple').doValidate(0), ValidatorError);
     });
 
     describe('non-required fields', function() {
@@ -198,39 +213,32 @@ describe('schema', function() {
         });
       });
 
-      it('number min and max', function(done) {
-        let remaining = 4;
+      it('number min and max', async function() {
         const Tobi = new Schema({
           friends: { type: Number, max: 15, min: 5 }
         });
 
         assert.equal(Tobi.path('friends').validators.length, 2);
 
-        Tobi.path('friends').doValidate(10, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Tobi.path('friends').doValidate(10);
 
-        Tobi.path('friends').doValidate(100, function(err) {
+        await assert.rejects(Tobi.path('friends').doValidate(100), (err) => {
           assert.ok(err instanceof ValidatorError);
           assert.equal(err.path, 'friends');
           assert.equal(err.kind, 'max');
           assert.equal(err.value, 100);
-          --remaining || done();
+          return true;
         });
 
-        Tobi.path('friends').doValidate(1, function(err) {
+        await assert.rejects(Tobi.path('friends').doValidate(1), (err) => {
           assert.ok(err instanceof ValidatorError);
           assert.equal(err.path, 'friends');
           assert.equal(err.kind, 'min');
-          --remaining || done();
+          return true;
         });
 
         // null is allowed
-        Tobi.path('friends').doValidate(null, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Tobi.path('friends').doValidate(null);
 
         Tobi.path('friends').min();
         Tobi.path('friends').max();
@@ -240,8 +248,7 @@ describe('schema', function() {
     });
 
     describe('required', function() {
-      it('string required', function(done) {
-        let remaining = 4;
+      it('string required', async function() {
         const Test = new Schema({
           simple: String
         });
@@ -249,29 +256,16 @@ describe('schema', function() {
         Test.path('simple').required(true);
         assert.equal(Test.path('simple').validators.length, 1);
 
-        Test.path('simple').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(Test.path('simple').doValidate(null), ValidatorError);
 
-        Test.path('simple').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(Test.path('simple').doValidate(undefined), ValidatorError);
 
-        Test.path('simple').doValidate('', function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(Test.path('simple').doValidate(''), ValidatorError);
 
-        Test.path('simple').doValidate('woot', function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate('woot');
       });
 
-      it('string conditional required', function(done) {
-        let remaining = 8;
+      it('string conditional required', async function() {
         const Test = new Schema({
           simple: String
         });
@@ -284,240 +278,172 @@ describe('schema', function() {
         Test.path('simple').required(isRequired);
         assert.equal(Test.path('simple').validators.length, 1);
 
-        Test.path('simple').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Test.path('simple').doValidate(null),
+          ValidatorError
+        );
 
-        Test.path('simple').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Test.path('simple').doValidate(undefined),
+          ValidatorError
+        );
 
-        Test.path('simple').doValidate('', function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Test.path('simple').doValidate(''),
+          ValidatorError
+        );
 
-        Test.path('simple').doValidate('woot', function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate('woot');
 
         required = false;
 
-        Test.path('simple').doValidate(null, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate(null);
 
-        Test.path('simple').doValidate(undefined, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate(undefined);
 
-        Test.path('simple').doValidate('', function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate('');
 
-        Test.path('simple').doValidate('woot', function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Test.path('simple').doValidate('woot');
       });
 
-      it('number required', function(done) {
-        let remaining = 3;
+      it('number required', async function() {
         const Edwald = new Schema({
           friends: { type: Number, required: true }
         });
 
-        Edwald.path('friends').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Edwald.path('friends').doValidate(null),
+          ValidatorError
+        );
 
-        Edwald.path('friends').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Edwald.path('friends').doValidate(undefined),
+          ValidatorError
+        );
 
-        Edwald.path('friends').doValidate(0, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Edwald.path('friends').doValidate(0);
       });
 
-      it('date required', function(done) {
-        let remaining = 3;
+      it('date required', async function() {
         const Loki = new Schema({
           birth_date: { type: Date, required: true }
         });
 
-        Loki.path('birth_date').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Loki.path('birth_date').doValidate(null),
+          ValidatorError
+        );
 
-        Loki.path('birth_date').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Loki.path('birth_date').doValidate(undefined),
+          ValidatorError
+        );
 
-        Loki.path('birth_date').doValidate(new Date(), function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Loki.path('birth_date').doValidate(new Date());
       });
 
-      it('date not empty string (gh-3132)', function(done) {
+      it('date not empty string (gh-3132)', async function() {
         const HappyBirthday = new Schema({
           date: { type: Date, required: true }
         });
 
-        HappyBirthday.path('date').doValidate('', function(err) {
-          assert.ok(err instanceof ValidatorError);
-          done();
-        });
+        await assert.rejects(
+          HappyBirthday.path('date').doValidate(''),
+          ValidatorError
+        );
       });
 
-      it('objectid required', function(done) {
-        let remaining = 3;
+      it('objectid required', async function() {
         const Loki = new Schema({
           owner: { type: ObjectId, required: true }
         });
 
-        Loki.path('owner').doValidate(new DocumentObjectId(), function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Loki.path('owner').doValidate(null),
+          ValidatorError
+        );
 
-        Loki.path('owner').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
-
-        Loki.path('owner').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Loki.path('owner').doValidate(undefined),
+          ValidatorError
+        );
       });
 
-      it('array required', function(done) {
+      it('array required', async function() {
         const Loki = new Schema({
           likes: { type: Array, required: true }
         });
 
-        let remaining = 2;
+        await assert.rejects(
+          Loki.path('likes').doValidate(null),
+          ValidatorError
+        );
 
-        Loki.path('likes').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
-
-        Loki.path('likes').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Loki.path('likes').doValidate(undefined),
+          ValidatorError
+        );
       });
 
-      it('array required custom required', function(done) {
+      it('array required custom required', async function() {
         const requiredOrig = mongoose.Schema.Types.Array.checkRequired();
         mongoose.Schema.Types.Array.checkRequired(v => Array.isArray(v) && v.length);
-        const doneWrapper = (err) => {
+        try {
+          const Loki = new Schema({
+            likes: { type: Array, required: true }
+          });
+
+          await assert.rejects(
+            Loki.path('likes').doValidate([]),
+            ValidatorError
+          );
+
+          await Loki.path('likes').doValidate(['cake']);
+        } finally {
           mongoose.Schema.Types.Array.checkRequired(requiredOrig);
-          done(err);
-        };
-
-        const Loki = new Schema({
-          likes: { type: Array, required: true }
-        });
-
-        let remaining = 2;
-
-        Loki.path('likes').doValidate([], function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || doneWrapper();
-        });
-
-        Loki.path('likes').doValidate(['cake'], function(err) {
-          assert(!err);
-          --remaining || doneWrapper();
-        });
+        }
       });
 
-      it('boolean required', function(done) {
+      it('boolean required', async function() {
         const Animal = new Schema({
           isFerret: { type: Boolean, required: true }
         });
 
-        let remaining = 4;
-
-        Animal.path('isFerret').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
-
-        Animal.path('isFerret').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
-
-        Animal.path('isFerret').doValidate(true, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
-
-        Animal.path('isFerret').doValidate(false, function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await assert.rejects(Animal.path('isFerret').doValidate(null), ValidatorError);
+        await assert.rejects(Animal.path('isFerret').doValidate(undefined), ValidatorError);
+        await Animal.path('isFerret').doValidate(true);
+        await Animal.path('isFerret').doValidate(false);
       });
 
-      it('mixed required', function(done) {
+      it('mixed required', async function() {
         const Animal = new Schema({
           characteristics: { type: Mixed, required: true }
         });
 
-        let remaining = 4;
+        await assert.rejects(
+          Animal.path('characteristics').doValidate(null),
+          ValidatorError
+        );
 
-        Animal.path('characteristics').doValidate(null, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
+        await assert.rejects(
+          Animal.path('characteristics').doValidate(undefined),
+          ValidatorError
+        );
 
-        Animal.path('characteristics').doValidate(undefined, function(err) {
-          assert.ok(err instanceof ValidatorError);
-          --remaining || done();
-        });
-
-        Animal.path('characteristics').doValidate({
+        await Animal.path('characteristics').doValidate({
           aggresive: true
-        }, function(err) {
-          assert.ifError(err);
-          --remaining || done();
         });
 
-        Animal.path('characteristics').doValidate('none available', function(err) {
-          assert.ifError(err);
-          --remaining || done();
-        });
+        await Animal.path('characteristics').doValidate('none available');
       });
     });
 
     describe('async', function() {
-      it('works', function(done) {
-        let executed = 0;
-
+      it('works', async function() {
         function validator(value) {
           return new Promise(function(resolve) {
             setTimeout(function() {
-              executed++;
               resolve(value === true);
-              if (executed === 2) {
-                done();
-              }
             }, 5);
           });
         }
@@ -526,16 +452,15 @@ describe('schema', function() {
           ferret: { type: Boolean, validate: validator }
         });
 
-        Animal.path('ferret').doValidate(true, function(err) {
-          assert.ifError(err);
-        });
+        await Animal.path('ferret').doValidate(true);
 
-        Animal.path('ferret').doValidate(false, function(err) {
-          assert.ok(err instanceof Error);
-        });
+        await assert.rejects(
+          Animal.path('ferret').doValidate(false),
+          ValidatorError
+        );
       });
 
-      it('scope', function(done) {
+      it('scope', async function() {
         let called = false;
 
         function validator() {
@@ -555,11 +480,8 @@ describe('schema', function() {
           }
         });
 
-        Animal.path('ferret').doValidate(true, function(err) {
-          assert.ifError(err);
-          assert.equal(called, true);
-          done();
-        }, { a: 'b' });
+        await Animal.path('ferret').doValidate(true, { a: 'b' });
+        assert.equal(called, true);
       });
 
       it('doValidateSync should ignore async function and script waiting for promises (gh-4885)', function(done) {
@@ -735,6 +657,52 @@ describe('schema', function() {
           const err = await m.validate().then(() => null, err => err);
           assert.equal(err.errors.x.toString(), 'Custom message');
         });
+
+        it('passes full string value to custom validator message functions', async function() {
+          const value = 'long-long-long.short-enough.com';
+          const schema = new Schema({
+            url: {
+              type: String,
+              validate: {
+                validator: function() {
+                  return false;
+                },
+                message: props => `${props.value} is not a valid url`
+              }
+            }
+          });
+
+          const M = mongoose.model('gh-15571', schema);
+          const m = new M({ url: value });
+
+          const err = await m.validate().then(() => null, err => err);
+          assert.equal(err.errors.url.message, `${value} is not a valid url`);
+          assert.equal(err.errors.url.value, value);
+          assert.equal(err.errors.url.properties.value, value);
+        });
+
+        it('passes full string value to custom validator message functions on validateSync()', function() {
+          const value = 'long-long-long.short-enough.com';
+          const schema = new Schema({
+            url: {
+              type: String,
+              validate: {
+                validator: function() {
+                  return false;
+                },
+                message: props => `${props.value} is not a valid url`
+              }
+            }
+          });
+
+          const M = mongoose.model('gh-15571-sync', schema);
+          const m = new M({ url: value });
+
+          const err = m.validateSync();
+          assert.equal(err.errors.url.message, `${value} is not a valid url`);
+          assert.equal(err.errors.url.value, value);
+          assert.equal(err.errors.url.properties.value, value);
+        });
       });
     });
 
@@ -838,6 +806,71 @@ describe('schema', function() {
       const a = new Test({ name: null });
       const err = await a.validate().then(() => null, err => err);
       assert.equal(err, null);
+    });
+
+    it('disallows null with allowNull false without making the path required', async function() {
+      const schema = new Schema({
+        name: { type: String, allowNull: false }
+      });
+      const Test = mongoose.model('allowNullFalse' + random(), schema);
+
+      await new Test({}).validate();
+      await new Test({ name: undefined }).validate();
+
+      const err = await new Test({ name: null }).validate().then(() => null, err => err);
+      assert.ok(err);
+      assert.ok(err.errors['name']);
+      assert.equal(err.errors['name'].name, 'ValidatorError');
+      assert.equal(err.errors['name'].kind, 'allowNull');
+      assert.equal(err.errors['name'].message, 'Path `name` does not allow null values.');
+    });
+
+    it('throws if allowNull is specified with required true', function() {
+      assert.throws(function() {
+        new Schema({
+          name: { type: String, required: true, allowNull: false }
+        });
+      }, /Path "name" may not have `allowNull` specified when `required` is true/);
+
+      assert.throws(function() {
+        new Schema({
+          name: { type: String, required: true, allowNull: true }
+        });
+      }, /Path "name" may not have `allowNull` specified when `required` is true/);
+
+      assert.throws(function() {
+        const schema = new Schema({ name: String });
+        schema.path('name').allowNull(false).required(true);
+      }, /Path "name" may not have `allowNull` specified when `required` is true/);
+
+      assert.throws(function() {
+        const schema = new Schema({ name: { type: String, required: true } });
+        schema.path('name').allowNull(false);
+      }, /Path "name" may not have `allowNull` specified when `required` is true/);
+    });
+
+    it('disallows null with allowNull false when required function returns false', async function() {
+      const schema = new Schema({
+        status: String,
+        endDate: {
+          type: Date,
+          required: function() { return this.status === 'completed'; },
+          allowNull: false
+        }
+      });
+      const Test = mongoose.model('allowNullRequiredFunction' + random(), schema);
+
+      await new Test({ status: 'pending', endDate: undefined }).validate();
+
+      const err = await new Test({ status: 'pending', endDate: null }).validate().then(() => null, err => err);
+      assert.ok(err);
+      assert.ok(err.errors['endDate']);
+      assert.equal(err.errors['endDate'].kind, 'allowNull');
+
+      const requiredErr = await new Test({ status: 'completed', endDate: null }).validate().then(() => null, err => err);
+      assert.ok(requiredErr);
+      assert.ok(requiredErr.errors['endDate']);
+      assert.equal(requiredErr.errors['endDate'].kind, 'required');
     });
 
     it('should allow an array of subdocuments with enums (gh-3521)', async function() {
@@ -1195,7 +1228,7 @@ describe('schema', function() {
         assert.ok(false);
       } catch (error) {
         assert.ok(error);
-        const errorMessage = 'ValidationError: description: Cast to String failed for value "test" (type string) at path "description"';
+        const errorMessage = 'ValidationError: description: Cast to String failed for value "test" (type string) at path "description" for model "gh2832"';
         assert.equal(errorMessage, error.toString());
         assert.ok(error.errors.description);
         assert.equal(error.errors.description.reason.toString(), 'Error: oops');
@@ -1402,7 +1435,7 @@ describe('schema', function() {
       }
     });
 
-    describe('`enum` accepts an object to support TypeScript enums (gh-9546) (gh-9535)', function() {
+    describe('`enum` accepts an object to support TypeScript enums (gh-9546) (gh-9535) (gh-15913)', function() {
       it('strings', function() {
         // Arrange
         const userSchema = new Schema({
@@ -1497,6 +1530,43 @@ describe('schema', function() {
 
         // Assert
         assert.ifError(err);
+      });
+
+      it('supports TypeScript-style enums (numeric reverse-mapping and string enums)', function() {
+        const tsNumericEnum = {
+          0: 'Zero',
+          1: 'One',
+          Zero: 0,
+          One: 1
+        };
+
+        const tsStringEnum = {
+          Alpha: 'ALPHA',
+          Beta: 'BETA'
+        };
+
+        const userSchema = new Schema({
+          status: {
+            type: Number,
+            enum: tsNumericEnum
+          },
+          kind: {
+            type: String,
+            enum: tsStringEnum
+          }
+        });
+
+        const User = mongoose.model('User_gh15913_ts_' + random(), userSchema);
+
+        // invalid numeric and string values should fail
+        const badUser = new User({ status: 2, kind: 'GAMMA' });
+        const err = badUser.validateSync();
+        assert.ok(err);
+        assert.ok(err.errors.status);
+
+        // valid values should pass
+        const goodUser = new User({ status: 1, kind: 'BETA' });
+        assert.ifError(goodUser.validateSync());
       });
     });
 

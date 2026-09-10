@@ -1,5 +1,5 @@
 import * as mongoose from 'mongoose';
-import { expectError, expectType } from 'tsd';
+import { expect } from 'tstyche';
 
 Object.values(mongoose.models).forEach(model => {
   model.modelName;
@@ -23,14 +23,14 @@ function gh10746() {
   let testVar: A;
   testVar = 'A string';
   testVar = 'B string';
-  expectType<string>(testVar);
+  expect(testVar).type.toBe<string>();
 }
 
 function gh10957() {
   type TestType = { name: string };
   const obj: TestType = { name: 'foo' };
 
-  expectType<TestType>(mongoose.trusted(obj));
+  expect(mongoose.trusted(obj)).type.toBe<TestType>();
 }
 
 function connectionStates() {
@@ -56,18 +56,61 @@ function gh10139() {
   mongoose.set('timestamps.createdAt.immutable', false);
 }
 
+function gh15756() {
+  mongoose.set('updatePipeline', false);
+  mongoose.set('updatePipeline', true);
+}
+
+function gh15972() {
+  mongoose.set('returnDocument', 'before');
+  mongoose.set('returnDocument', 'after');
+
+  expect(mongoose.set).type.not.toBeCallableWith('returnDocument', 'invalid');
+  expect(mongoose.set).type.not.toBeCallableWith('returnDocument', true);
+}
+
 function gh12100() {
-  mongoose.syncIndexes({ continueOnError: true, noResponse: true });
-  mongoose.syncIndexes({ continueOnError: false, noResponse: true });
+  mongoose.syncIndexes({ continueOnError: true, sparse: true });
+  mongoose.syncIndexes({ continueOnError: false, sparse: true });
 }
 
 function setAsObject() {
   mongoose.set({
     debug: true,
-    autoIndex: false
+    autoIndex: false,
+    updatePipeline: true
   });
 
-  expectError(mongoose.set({ invalid: true }));
+  expect(mongoose.set).type.not.toBeCallableWith({ invalid: true });
+}
+
+function debugOptions() {
+  // Test debug with color and shell
+  mongoose.set({
+    debug: { color: true, shell: false }
+  });
+
+  // Test debug with timestamp
+  mongoose.set({
+    debug: { timestamp: true }
+  });
+
+  // Test debug with all options
+  mongoose.set({
+    debug: { color: true, shell: false, timestamp: true }
+  });
+
+  // Test debug with timestamp set to false
+  mongoose.set({
+    debug: { color: true, timestamp: false }
+  });
+
+  expect(mongoose.set).type.not.toBeCallableWith({ debug: { invalidOption: true } });
 }
 
 const x: { name: string } = mongoose.omitUndefined({ name: 'foo' });
+
+function baseConnectionAndCollection() {
+  const conn: mongoose.BaseConnection = mongoose.createConnection();
+  const coll: mongoose.BaseCollection<any> = conn.collection('test1');
+}

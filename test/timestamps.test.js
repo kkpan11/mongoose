@@ -131,7 +131,7 @@ describe('timestamps', function() {
 
       const indexes = testSchema.indexes();
       assert.deepEqual(indexes, [
-        [{ updatedAt: 1 }, { background: true, expireAfterSeconds: 7200 }]
+        [{ updatedAt: 1 }, { expireAfterSeconds: 7200 }]
       ]);
     });
   });
@@ -696,6 +696,7 @@ describe('timestamps', function() {
       let group = await Group.create({ cats: [{ name: 'Garfield' }] });
       group.cats.push({ name: 'Keanu' });
       await group.save();
+      await new Promise(resolve => setTimeout(resolve, 5));
       group = await Group.findById(group._id);
       assert.ok(group.cats[1].createdAt);
       assert.ok(group.cats[1].createdAt.getTime() > now);
@@ -1034,9 +1035,7 @@ describe('timestamps', function() {
       sub: { subName: 'John' }
     });
     await doc.save();
-    await Test.updateMany({}, [{ $set: { updateCounter: 1 } }]);
-    // oddly enough, the null property is not accessible. Doing check.null doesn't return anything even though
-    // if you were to console.log() the output of a findOne you would be able to see it. This is the workaround.
+    await Test.updateMany({}, [{ $set: { updateCounter: 1 } }], { updatePipeline: true });
     const test = await Test.countDocuments({ null: { $exists: true } });
     assert.equal(test, 0);
     // now we need to make sure that the solution didn't prevent the updateCounter addition

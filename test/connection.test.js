@@ -7,7 +7,6 @@
 const start = require('./common');
 
 const STATES = require('../lib/connectionState');
-const Q = require('q');
 const assert = require('assert');
 const mongodb = require('mongodb');
 const MongooseError = require('../lib/error/index');
@@ -25,7 +24,13 @@ describe('connections:', function() {
 
   describe('openUri (gh-5304)', function() {
     it('with mongoose.createConnection()', function() {
-      const conn = mongoose.createConnection(start.uri.slice(0, start.uri.lastIndexOf('/')) + '/' + start.databases[0]);
+      // Handle start.uri with potential query string parameters
+      const uriWithoutDb = start.uri.slice(0, start.uri.lastIndexOf('/'));
+      const dbAndQuery = start.uri.slice(start.uri.lastIndexOf('/') + 1);
+      const queryIndex = dbAndQuery.indexOf('?');
+      const query = queryIndex !== -1 ? dbAndQuery.slice(queryIndex) : '';
+      const newUri = uriWithoutDb + '/' + start.databases[0] + query;
+      const conn = mongoose.createConnection(newUri);
       assert.equal(conn.constructor.name, 'NativeConnection');
 
       const Test = conn.model('Test', new Schema({ name: String }));
@@ -118,20 +123,6 @@ describe('connections:', function() {
       await assert.rejects(async function() {
         await mongoose.createConnection(void 0).asPromise();
       }, /string.*createConnection/);
-    });
-
-    it('resolving with q (gh-5714)', async function() {
-      const bootMongo = Q.defer();
-
-      const conn = mongoose.createConnection(start.uri);
-
-      conn.on('connected', function() {
-        bootMongo.resolve(this);
-      });
-
-      const _conn = await bootMongo.promise;
-      assert.equal(_conn, conn);
-      await conn.close();
     });
 
     it('connection plugins (gh-7378)', async function() {
@@ -463,6 +454,18 @@ describe('connections:', function() {
     }
   });
 
+  it('can re-open after close with useDb() (gh-15531)', async function() {
+    const opts = {};
+    const conn = await mongoose.createConnection(start.uri, opts).asPromise();
+
+    conn.useDb('test-db');
+
+    await conn.close();
+    await conn.openUri(start.uri);
+    assert.strictEqual(conn.readyState, 1);
+    await conn.collection('Test').insertOne({ x: 1 });
+  });
+
   it('verify that attempt to re-open destroyed connection throws error, via callback', async function() {
     const opts = {};
     const conn = await mongoose.createConnection(start.uri, opts).asPromise();
@@ -541,13 +544,16 @@ describe('connections:', function() {
       });
   });
 
-  it('uses default database in uri if options.dbName is not provided', function() {
-    return mongoose.createConnection(start.uri.slice(0, start.uri.lastIndexOf('/')) + '/default-db-name').
-      asPromise().
-      then(db => {
-        assert.equal(db.name, 'default-db-name');
-        db.close();
-      });
+  it('uses default database in uri if options.dbName is not provided', async function() {
+    // Handle possible query string parameters in start.uri
+    const uriWithoutDb = start.uri.slice(0, start.uri.lastIndexOf('/'));
+    const dbAndQuery = start.uri.slice(start.uri.lastIndexOf('/') + 1);
+    const queryIndex = dbAndQuery.indexOf('?');
+    const query = queryIndex !== -1 ? dbAndQuery.slice(queryIndex) : '';
+    const newUri = uriWithoutDb + '/default-db-name' + query;
+    const db = await mongoose.createConnection(newUri).asPromise();
+    assert.equal(db.name, 'default-db-name');
+    await db.close();
   });
 
   it('startSession() (gh-6653)', function() {
@@ -560,7 +566,7 @@ describe('connections:', function() {
         session = _session;
         assert.ok(session);
         lastUse = session.serverSession.lastUse;
-        return new Promise(resolve => setTimeout(resolve, 1));
+        return new Promise(resolve => setTimeout(resolve, 10));
       }).then(() => {
         return conn.model('Test', new Schema({})).findOne({}, null, { session });
       }).
@@ -858,6 +864,86 @@ describe('connections:', function() {
 
       await db.close();
     });
+
+    it('updates child dbs lastHeartbeatAt (gh-15635)', async function() {
+      const db = await mongoose.createConnection(start.uri).asPromise();
+
+      const schema = mongoose.Schema({ name: String }, { autoCreate: false, autoIndex: false });
+      const Test = db.model('Test', schema);
+      await Test.deleteMany({});
+      await Test.create({ name: 'gh-11821' });
+
+      const db2 = db.useDb(start.databases[1]);
+
+      const now = Date.now();
+      db.client.emit('serverHeartbeatSucceeded');
+      assert.ok(db._lastHeartbeatAt >= now);
+      assert.ok(db2._lastHeartbeatAt >= now);
+    });
+
+    it('heartbeat handler uses snapshotted Date, not affected by faked globalThis.Date (gh-16183)', async function() {
+      const db = await mongoose.createConnection(start.uri).asPromise();
+
+      const OriginalDate = globalThis.Date;
+      try {
+        const FAKE_NOW = 1;
+        globalThis.Date = { now: () => FAKE_NOW };
+
+        const realBefore = OriginalDate.now();
+        db.client.emit('serverHeartbeatSucceeded');
+        const realAfter = OriginalDate.now();
+
+        // If using snapshotted Date, _lastHeartbeatAt should be a real timestamp, not the faked value
+        assert.notStrictEqual(db._lastHeartbeatAt, FAKE_NOW);
+        assert.ok(db._lastHeartbeatAt >= realBefore);
+        assert.ok(db._lastHeartbeatAt <= realAfter);
+      } finally {
+        globalThis.Date = OriginalDate;
+        await db.close();
+      }
+    });
+
+    it('flushes buffered operations when heartbeat refreshes stale connection (gh-16183)', async function() {
+      const db = await mongoose.createConnection(start.uri).asPromise();
+
+      // Make heartbeat stale so readyState getter returns disconnected
+      db._lastHeartbeatAt = 1;
+      assert.equal(db._readyState, STATES.connected);
+      assert.equal(db.readyState, STATES.disconnected);
+
+      // Simulate a buffered operation
+      let flushed = false;
+      db._queue.push({ fn: () => { flushed = true; } });
+
+      // Heartbeat should update timestamp AND flush queue
+      db.client.emit('serverHeartbeatSucceeded');
+
+      assert.equal(db.readyState, STATES.connected);
+      assert.strictEqual(flushed, true);
+      assert.equal(db._queue.length, 0);
+
+      await db.close();
+    });
+
+    it('flushes buffered operations on child dbs when heartbeat refreshes stale connection (gh-16183)', async function() {
+      const db = await mongoose.createConnection(start.uri).asPromise();
+      const db2 = db.useDb(start.databases[1]);
+
+      // Make both stale
+      db._lastHeartbeatAt = 1;
+      db2._lastHeartbeatAt = 1;
+
+      // Queue operation on child db
+      let childFlushed = false;
+      db2._queue.push({ fn: () => { childFlushed = true; } });
+
+      db.client.emit('serverHeartbeatSucceeded');
+
+      assert.strictEqual(childFlushed, true);
+      assert.equal(db2._queue.length, 0);
+
+      await db.close();
+    });
   });
 
   describe('shouldAuthenticate()', function() {
@@ -1028,6 +1114,7 @@ describe('connections:', function() {
     await new Promise((resolve) => changeStream.on('ready', () => resolve()));
 
     const nextChange = new Promise(resolve => changeStream.on('change', resolve));
+
     await Model.create({ name: 'test2' });
 
     await nextChange;
@@ -1720,7 +1807,8 @@ describe('connections:', function() {
     const Test = db.model('Test', new Schema({ name: { type: String, required: true } }));
 
     await Test.deleteMany({});
-    await db.bulkWrite([{ model: 'Test', name: 'insertOne', document: { name: 'test1' } }]);
+    const res = await db.bulkWrite([{ model: 'Test', name: 'insertOne', document: { name: 'test1' } }]);
+    assert.equal(res.insertedCount, 1);
     assert.ok(await Test.exists({ name: 'test1' }));
 
     await db.bulkWrite([{ model: Test, name: 'insertOne', document: { name: 'test2' } }]);

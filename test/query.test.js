@@ -6,7 +6,7 @@
 
 const start = require('./common');
 
-const { EJSON } = require('bson');
+const { EJSON } = require('mongodb/lib/bson');
 const Query = require('../lib/query');
 const assert = require('assert');
 const util = require('./util');
@@ -446,75 +446,6 @@ describe('Query', function() {
     });
   });
 
-  describe('within', function() {
-    describe('box', function() {
-      it('via where', function() {
-        const query = new Query({});
-        query.where('gps').within().box({ ll: [5, 25], ur: [10, 30] });
-        const match = { gps: { $within: { $box: [[5, 25], [10, 30]] } } };
-        if (Query.use$geoWithin) {
-          match.gps.$geoWithin = match.gps.$within;
-          delete match.gps.$within;
-        }
-        assert.deepEqual(query._conditions, match);
-
-      });
-      it('via where, no object', function() {
-        const query = new Query({});
-        query.where('gps').within().box([5, 25], [10, 30]);
-        const match = { gps: { $within: { $box: [[5, 25], [10, 30]] } } };
-        if (Query.use$geoWithin) {
-          match.gps.$geoWithin = match.gps.$within;
-          delete match.gps.$within;
-        }
-        assert.deepEqual(query._conditions, match);
-
-      });
-    });
-
-    describe('center', function() {
-      it('via where', function() {
-        const query = new Query({});
-        query.where('gps').within().center({ center: [5, 25], radius: 5 });
-        const match = { gps: { $within: { $center: [[5, 25], 5] } } };
-        if (Query.use$geoWithin) {
-          match.gps.$geoWithin = match.gps.$within;
-          delete match.gps.$within;
-        }
-        assert.deepEqual(query._conditions, match);
-
-      });
-    });
-
-    describe('centerSphere', function() {
-      it('via where', function() {
-        const query = new Query({});
-        query.where('gps').within().centerSphere({ center: [5, 25], radius: 5 });
-        const match = { gps: { $within: { $centerSphere: [[5, 25], 5] } } };
-        if (Query.use$geoWithin) {
-          match.gps.$geoWithin = match.gps.$within;
-          delete match.gps.$within;
-        }
-        assert.deepEqual(query._conditions, match);
-
-      });
-    });
-
-    describe('polygon', function() {
-      it('via where', function() {
-        const query = new Query({});
-        query.where('gps').within().polygon({ a: { x: 10, y: 20 }, b: { x: 15, y: 25 }, c: { x: 20, y: 20 } });
-        const match = { gps: { $within: { $polygon: [{ a: { x: 10, y: 20 }, b: { x: 15, y: 25 }, c: { x: 20, y: 20 } }] } } };
-        if (Query.use$geoWithin) {
-          match.gps.$geoWithin = match.gps.$within;
-          delete match.gps.$within;
-        }
-        assert.deepEqual(query._conditions, match);
-
-      });
-    });
-  });
-
   describe('exists', function() {
     it('0 args via where', function() {
       const query = new Query({});
@@ -571,7 +502,7 @@ describe('Query', function() {
 
       try {
         q.find();
-      } catch (err) {
+      } catch {
         threw = true;
       }
 
@@ -1498,9 +1429,9 @@ describe('Query', function() {
           then(() => Product.find().sort({ _id: 1 }).countDocuments({}).exec());
       });
 
-      it.skip('ignores count when passed to sort', function() {
+      it('ignores count when passed to sort', function() {
         const Product = db.model('Product', productSchema);
-        return Product.find().count({}).sort({ _id: 1 }).exec();
+        return Product.find().countDocuments({}).sort({ _id: 1 }).exec();
       });
     });
 
@@ -1923,9 +1854,8 @@ describe('Query', function() {
       ];
 
       ops.forEach(function(op) {
-        TestSchema.pre(op, function(next) {
+        TestSchema.pre(op, function() {
           this.error(new Error(op + ' error'));
-          next();
         });
       });
 
@@ -1998,6 +1928,52 @@ describe('Query', function() {
       assert.ok(!doc.child2.field);
     });
 
+    it('excluding a subdocument path does not conflict with a nested select: false path (gh-12798)', async function() {
+      const schema = new Schema({
+        name: String,
+        subd: {
+          raw: { type: String, select: false },
+          clean: String
+        }
+      });
+      const Test = db.model('Test', schema);
+
+      await Test.create({ name: 'test', subd: { raw: 'raw', clean: 'clean' } });
+
+      const query = Test.find().select('-subd');
+      query._applyPaths();
+      assert.deepEqual(query._fields, { subd: 0 });
+
+      const doc = await Test.findOne().select('-subd').orFail();
+      assert.strictEqual(doc.subd.clean, undefined);
+      assert.strictEqual(doc.subd.raw, undefined);
+
+      // `false` is a valid exclusion value alongside `0` and shouldn't
+      // collide with the schema-level exclusion either
+      const boolQuery = Test.find().select({ subd: false });
+      boolQuery._applyPaths();
+      assert.deepEqual(boolQuery._fields, { subd: false });
+
+      // Any other falsy defining value is equally a valid exclusion
+      const emptyStringQuery = Test.find().select({ subd: '' });
+      emptyStringQuery._applyPaths();
+      assert.deepEqual(emptyStringQuery._fields, { subd: '' });
+
+      const Deep = db.model('Test1', new Schema({
+        a: { b: { c: { type: String, select: false }, d: String } },
+        arr: [{ raw: { type: String, select: false }, clean: String }]
+      }));
+      for (const [sel, expected] of [
+        ['-a', { a: 0, 'arr.raw': 0 }],
+        ['-a.b', { 'a.b': 0, 'arr.raw': 0 }],
+        ['-arr', { arr: 0, 'a.b.c': 0 }]
+      ]) {
+        const deepQuery = Deep.find().select(sel);
+        deepQuery._applyPaths();
+        assert.deepEqual(deepQuery._fields, expected);
+      }
+    });
+
     it('errors in post init (gh-5592)', async function() {
       const TestSchema = new Schema();
 
@@ -2053,6 +2029,7 @@ describe('Query', function() {
 
       const Model = db.model('Test', schema);
 
+      await Model.deleteMany({});
       await Model.create({ n: 42 });
 
       let res = await Model.find().explain('queryPlanner');
@@ -2354,6 +2331,19 @@ describe('Query', function() {
     assert.strictEqual(called, 1);
   });
 
+  it('transform with for/await and cursor', async function() {
+    const Model = db.model('Test', new Schema({ name: String }));
+
+    await Model.create({ name: 'test' });
+    const cursor = Model.find().transform(doc => doc.name.toUpperCase()).cursor();
+    const names = [];
+    for await (const name of cursor) {
+      names.push(name);
+    }
+
+    assert.deepStrictEqual(names, ['TEST']);
+  });
+
   describe('orFail (gh-6841)', function() {
     let Model;
 
@@ -2627,6 +2617,27 @@ describe('Query', function() {
       q.setUpdate({ $set: { newPath: 'newValue' } });
       assert.strictEqual(q._update.$set.testing, undefined);
       assert.strictEqual(q._update.$set.newPath, 'newValue');
+    });
+
+    it('stores cloneUpdate option when setting update', function() {
+      const q = new Query({});
+      const update = { $set: { newPath: 'newValue' } };
+
+      q.setUpdate(update, false);
+
+      assert.strictEqual(q.mongooseOptions().cloneUpdate, false);
+      assert.strictEqual(q.getUpdate(), update);
+    });
+
+    it('clones shared update when mutating `_update` directly', function() {
+      const q = new Query({});
+      const update = { $set: { newPath: 'newValue' } };
+
+      q.updateOne({}, update);
+      q._update.$set.otherPath = 'otherValue';
+
+      assert.deepStrictEqual(update, { $set: { newPath: 'newValue' } });
+      assert.strictEqual(q.getUpdate().$set.otherPath, 'otherValue');
     });
   });
 
@@ -3081,7 +3092,6 @@ describe('Query', function() {
   it('throws an error if executed multiple times (gh-7398)', async function() {
     const Test = db.model('Test', Schema({ name: String }));
 
-
     const q = Test.findOne();
 
     await q;
@@ -3090,7 +3100,6 @@ describe('Query', function() {
     assert.ok(err);
     assert.equal(err.name, 'MongooseError');
     assert.equal(err.message, 'Query was already executed: Test.findOne({})');
-    assert.ok(err.originalStack);
 
     err = await q.clone().then(() => null, err => err);
     assert.ifError(err);
@@ -3128,7 +3137,7 @@ describe('Query', function() {
     const Model = db.model('Test', schema);
 
     return Model.updateOne({}, { name: 'bar' }).exec().
-      then(() => assert.deepEqual(priorVals, [null]));
+      then(() => assert.deepEqual(priorVals, [undefined]));
   });
 
   describe('clone', function() {
@@ -3316,7 +3325,6 @@ describe('Query', function() {
       quiz_title: String,
       questions: [questionSchema]
     }, { strict: 'throw' });
-    const Quiz = db.model('Test', quizSchema);
 
     const mcqQuestionSchema = new Schema({
       text: String,
@@ -3324,6 +3332,7 @@ describe('Query', function() {
     }, { strict: 'throw' });
 
     quizSchema.path('questions').discriminator('mcq', mcqQuestionSchema);
+    const Quiz = db.model('Test', quizSchema);
 
     const id1 = new mongoose.Types.ObjectId();
     const id2 = new mongoose.Types.ObjectId();
@@ -4200,7 +4209,7 @@ describe('Query', function() {
     });
     const Test = db.model('Test', schema);
 
-    const BookHolder = schema.path('bookHolder').caster;
+    const BookHolder = schema.path('bookHolder').Constructor;
 
     await Test.collection.insertOne({
       title: 'test-defaults-disabled',
@@ -4220,6 +4229,107 @@ describe('Query', function() {
     assert.ok(doc);
     assert.equal(doc.title, 'test-defaults-disabled');
   });
+  describe('defaults option skips applying defaults on query results (gh-7287)', function() {
+    const schema = mongoose.Schema({
+      name: { type: String, default: 'foo' },
+      age: { type: Number },
+      _id: { type: Number }
+    });
+    let Test;
+
+    beforeEach(async function() {
+      Test = db.model('Test', schema);
+      await Test.collection.insertMany([{ age: 21, _id: 1 }, { age: 25, _id: 2 }]);
+    });
+
+    it('find()', async function() {
+      const docs = await Test.find().setOptions({ defaults: false });
+      assert.equal(docs.length, 2);
+      for (const doc of docs) {
+        assert.ok(!doc.name);
+      }
+
+      const docsWithDefaults = await Test.find();
+      for (const doc of docsWithDefaults) {
+        assert.equal(doc.name, 'foo');
+      }
+    });
+
+    it('findOne()', async function() {
+      const doc = await Test.findOne({ _id: 1 }).setOptions({ defaults: false });
+      assert.ok(!doc.name);
+
+      const docWithDefaults = await Test.findOne({ _id: 1 });
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+
+    it('findById()', async function() {
+      const doc = await Test.findById(1).setOptions({ defaults: false });
+      assert.ok(!doc.name);
+
+      const docWithDefaults = await Test.findById(1);
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+
+    it('findOneAndUpdate()', async function() {
+      const doc = await Test.findOneAndUpdate(
+        { _id: 1 },
+        { age: 22 },
+        { defaults: false }
+      );
+      assert.ok(!doc.name);
+
+      const docWithDefaults = await Test.findOneAndUpdate(
+        { _id: 1 },
+        { age: 23 }
+      );
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+
+    it('findByIdAndUpdate()', async function() {
+      const doc = await Test.findByIdAndUpdate(
+        1,
+        { age: 22 },
+        { defaults: false }
+      );
+      assert.ok(!doc.name);
+
+      const docWithDefaults = await Test.findByIdAndUpdate(
+        1,
+        { age: 23 }
+      );
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+
+    it('findOneAndReplace()', async function() {
+      const doc = await Test.findOneAndReplace(
+        { _id: 1 },
+        { age: 30, _id: 1 },
+        { defaults: false }
+      );
+      assert.ok(!doc.name);
+      assert.equal(doc.age, 21);
+
+      const docWithDefaults = await Test.findOneAndReplace(
+        { _id: 2 },
+        { age: 31, _id: 2 }
+      );
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+
+    it('findOneAndDelete()', async function() {
+      const doc = await Test.findOneAndDelete(
+        { _id: 2 },
+        { defaults: false }
+      );
+      assert.ok(!doc.name);
+      assert.equal(doc.age, 25);
+
+      const docWithDefaults = await Test.findOneAndDelete({ _id: 1 });
+      assert.equal(docWithDefaults.name, 'foo');
+    });
+  });
+
   it('throws a readable error when executing Query instance without a model (gh-13570)', async function() {
     const schema = new Schema({ name: String });
     const M = db.model('Test', schema, 'Test');
@@ -4410,6 +4520,633 @@ describe('Query', function() {
       const doc = await UserModel.findById(_id).orFail().schemaLevelProjections(true);
       assert.strictEqual(doc.email, 'test');
       assert.strictEqual(doc.passwordHash, undefined);
+    });
+  });
+
+  it('throws an error if calling find(null), findOne(null), updateOne(null, update), etc. (gh-14948)', async function() {
+    const userSchema = new Schema({
+      name: String
+    });
+    const UserModel = db.model('User', userSchema);
+    await UserModel.deleteMany({});
+    await UserModel.updateOne({ name: 'test' }, { name: 'test' }, { upsert: true });
+
+    await assert.rejects(
+      () => UserModel.find(null),
+      /ObjectParameterError: Parameter "filter" to find\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.findOne(null),
+      /ObjectParameterError: Parameter "filter" to findOne\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.findOneAndUpdate(null, { name: 'test2' }),
+      /ObjectParameterError: Parameter "filter" to findOneAndUpdate\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.findOneAndReplace(null, { name: 'test2' }),
+      /ObjectParameterError: Parameter "filter" to findOneAndReplace\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.findOneAndDelete(null),
+      /ObjectParameterError: Parameter "filter" to findOneAndDelete\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.updateOne(null, { name: 'test2' }),
+      /ObjectParameterError: Parameter "filter" to updateOne\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.updateMany(null, { name: 'test2' }),
+      /ObjectParameterError: Parameter "filter" to updateMany\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.deleteOne(null),
+      /ObjectParameterError: Parameter "filter" to deleteOne\(\) must be an object, got "null"/
+    );
+    await assert.rejects(
+      () => UserModel.deleteMany(null),
+      /ObjectParameterError: Parameter "filter" to deleteMany\(\) must be an object, got "null"/
+    );
+  });
+
+  describe('findById(andUpdate/andDelete)', function() {
+    let Person;
+    let _id;
+    const targetName = 'Charlie';
+
+    beforeEach(async function() {
+      const schema = new Schema({ name: String, age: Number });
+      Person = db.model('Person', schema);
+
+      const people = await Person.create([
+        { name: 'Alice', age: 10 },
+        { name: 'Bob', age: 20 },
+        { name: targetName, age: 30 },
+        { name: 'Dave', age: 40 }
+      ]);
+      _id = people[2]._id;
+    });
+
+    it('findById returns null for undefined', async function() {
+      const queryUndefined = await Person.find({}).findById(undefined);
+      assert.strictEqual(queryUndefined, null);
+    });
+
+    it('findById returns document for valid _id', async function() {
+      const target = await Person.find({}).findById(_id);
+      assert.strictEqual(target?.name, targetName);
+    });
+
+    it('findByIdAndUpdate updates and returns the updated document', async function() {
+      const updatedAge = 50;
+      const updatedTarget = await Person.find({}).findByIdAndUpdate(_id, { age: updatedAge }, { new: true });
+      assert.strictEqual(updatedTarget?.age, updatedAge);
+    });
+
+    it('findByIdAndDelete deletes and returns the deleted document', async function() {
+      const deletedTarget = await Person.find({}).findByIdAndDelete(_id);
+      assert.strictEqual(deletedTarget?.name, targetName);
+
+      const target = await Person.find({}).findById(_id);
+
+      assert.strictEqual(target, null);
+    });
+  });
+
+  it('propagates readPreference to populate options if read() is called after populate() (gh-15553)', async function() {
+    const schema = new Schema({ name: String, age: Number, friends: [{ type: 'ObjectId', ref: 'Person' }] });
+    const Person = db.model('Person', schema);
+
+    let query = Person.find({}).populate('friends');
+    query.read('secondaryPreferred');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readPreference.mode, 'secondaryPreferred');
+
+    query = Person.find({}).read('secondary').populate('friends');
+    query.read('secondaryPreferred');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readPreference.mode, 'secondaryPreferred');
+
+    query = Person.find({}).read('secondaryPreferred').populate('friends');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readPreference.mode, 'secondaryPreferred');
+
+    query = Person.find({}).read('primaryPreferred').populate({ path: 'friends', options: { readPreference: 'secondaryPreferred' } });
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readPreference, 'secondaryPreferred');
+  });
+
+  it('propagates readConcern to populate options if readConcern() is called after populate() (gh-15553)', async function() {
+    const schema = new Schema({ name: String, age: Number, friends: [{ type: 'ObjectId', ref: 'Person' }] });
+    const Person = db.model('Person', schema);
+
+    let query = Person.find({}).populate('friends');
+    query.readConcern('majority');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readConcern.level, 'majority');
+
+    query = Person.find({}).readConcern('local').populate('friends');
+    query.readConcern('majority');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readConcern.level, 'majority');
+
+    query = Person.find({}).readConcern('majority').populate('friends');
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readConcern.level, 'majority');
+
+    query = Person.find({}).readConcern('majority').populate({ path: 'friends', options: { readConcern: 'local' } });
+    await query.exec();
+    assert.strictEqual(query._mongooseOptions.populate.friends.options.readConcern, 'local');
+  });
+
+  it('does not error out if strict "throw" and db document has extra fields', async function() {
+    const schema = new Schema({
+      name: String,
+      age: Number
+    }, { strict: 'throw' });
+    const Person = db.model('Person', schema);
+
+    await Person.collection.insertOne({ name: 'test strict throw', extraProperty: 'test' });
+    const doc = await Person.findOne({ name: 'test strict throw' });
+    assert.strictEqual(doc.get('extraProperty'), 'test');
+  });
+
+  describe('Query with requireFilter', function() {
+    let Person;
+    let _id;
+
+    beforeEach(async function() {
+      this.timeout(15000);
+
+      try {
+        const schema = new Schema({ name: String, email: String });
+        Person = db.model('Person', schema, null, { cache: false });
+
+        await Person.deleteMany({});
+
+        const person = await Person.create({ name: 'Alice', email: 'alice@example.com' });
+        _id = person._id;
+      } catch (err) {
+        console.error('beforeEach error:', err);
+        throw err;
+      }
+    });
+
+    describe('findOneAndUpdate', function() {
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate({}, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate(null, { name: 'Updated' }, { requireFilter: true }),
+          /Parameter "filter" to findOneAndUpdate\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate(123, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate({ $and: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate({ $or: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndUpdate({ $nor: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('updates with non-empty filter when requireFilter is true', async function() {
+        const updated = await Person.findOneAndUpdate(
+          { _id },
+          { name: 'Updated Alice' },
+          { requireFilter: true, new: true }
+        );
+        assert.strictEqual(updated.name, 'Updated Alice');
+      });
+
+      it('updates first document with empty filter when requireFilter is false', async function() {
+        const updated = await Person.findOneAndUpdate(
+          {},
+          { name: 'Updated' },
+          { requireFilter: false, new: true }
+        );
+        assert.strictEqual(updated.name, 'Updated');
+      });
+    });
+
+    describe('findOneAndReplace', function() {
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace({}, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace(null, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Parameter "filter" to findOneAndReplace\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace(123, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace({ $and: [{}] }, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace({ $or: [{}] }, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndReplace({ $nor: [{}] }, { name: 'Replaced', email: 'replaced@example.com' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('replaces with non-empty filter when requireFilter is true', async function() {
+        const replaced = await Person.findOneAndReplace(
+          { _id },
+          { name: 'Replaced Alice', email: 'replaced@example.com' },
+          { requireFilter: true, new: true }
+        );
+        assert.strictEqual(replaced.name, 'Replaced Alice');
+        assert.strictEqual(replaced.email, 'replaced@example.com');
+      });
+
+      it('replaces first document with empty filter when requireFilter is false', async function() {
+        const replaced = await Person.findOneAndReplace(
+          {},
+          { name: 'Replaced', email: 'replaced@example.com' },
+          { requireFilter: false, new: true }
+        );
+        assert.strictEqual(replaced.name, 'Replaced');
+      });
+    });
+
+    describe('findOneAndDelete', function() {
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete({}, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete(null, { requireFilter: true }),
+          /Parameter "filter" to findOneAndDelete\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete(123, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete({ $and: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete({ $or: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.findOneAndDelete({ $nor: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('deletes with non-empty filter when requireFilter is true', async function() {
+        const deleted = await Person.findOneAndDelete(
+          { _id },
+          { requireFilter: true }
+        );
+        assert.strictEqual(deleted.name, 'Alice');
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
+
+      it('deletes first document with empty filter when requireFilter is false', async function() {
+        const deleted = await Person.findOneAndDelete(
+          {},
+          { requireFilter: false }
+        );
+        assert.strictEqual(deleted.name, 'Alice');
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
+    });
+
+    describe('updateOne', function() {
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne({}, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne(null, { name: 'Updated' }, { requireFilter: true }),
+          /Parameter "filter" to updateOne\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne(123, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne({ $and: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne({ $or: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateOne({ $nor: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('updates with non-empty filter when requireFilter is true', async function() {
+        const result = await Person.updateOne(
+          { _id },
+          { name: 'Updated Alice' },
+          { requireFilter: true }
+        );
+        assert.strictEqual(result.modifiedCount, 1);
+        const person = await Person.findById(_id);
+        assert.strictEqual(person.name, 'Updated Alice');
+      });
+
+      it('updates first document with empty filter when requireFilter is false', async function() {
+        const result = await Person.updateOne(
+          {},
+          { name: 'Updated' },
+          { requireFilter: false }
+        );
+        assert.strictEqual(result.modifiedCount, 1);
+        const person = await Person.findById(_id);
+        assert.strictEqual(person.name, 'Updated');
+      });
+    });
+
+    describe('updateMany', function() {
+      beforeEach(async function() {
+        await Person.create({ name: 'Bob', email: 'bob@example.com' });
+      });
+
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany({}, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany(null, { name: 'Updated' }, { requireFilter: true }),
+          /Parameter "filter" to updateMany\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany(123, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany({ $and: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany({ $or: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.updateMany({ $nor: [{}] }, { name: 'Updated' }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('updates with non-empty filter when requireFilter is true', async function() {
+        const result = await Person.updateMany(
+          { name: { $in: ['Alice', 'Bob'] } },
+          { name: 'Updated Person' },
+          { requireFilter: true }
+        );
+        assert.strictEqual(result.modifiedCount, 2);
+        const persons = await Person.find({ name: 'Updated Person' });
+        assert.strictEqual(persons.length, 2);
+      });
+
+      it('updates all documents with empty filter when requireFilter is false', async function() {
+        const result = await Person.updateMany(
+          {},
+          { name: 'Updated' },
+          { requireFilter: false }
+        );
+        assert.strictEqual(result.modifiedCount, 2);
+        const persons = await Person.find({ name: 'Updated' });
+        assert.strictEqual(persons.length, 2);
+      });
+    });
+
+    describe('deleteOne', function() {
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne({}, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne(null, { requireFilter: true }),
+          /Parameter "filter" to deleteOne\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne(123, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne({ $and: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne({ $or: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteOne({ $nor: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('deletes with non-empty filter when requireFilter is true', async function() {
+        const result = await Person.deleteOne(
+          { _id },
+          { requireFilter: true }
+        );
+        assert.strictEqual(result.deletedCount, 1);
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
+
+      it('deletes first document with empty filter when requireFilter is false', async function() {
+        const result = await Person.deleteOne(
+          {},
+          { requireFilter: false }
+        );
+        assert.strictEqual(result.deletedCount, 1);
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
+    });
+
+    describe('deleteMany', function() {
+      beforeEach(async function() {
+        await Person.create({ name: 'Bob', email: 'bob@example.com' });
+      });
+
+      it('throws error for empty filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany({}, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for null filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany(null, { requireFilter: true }),
+          /Parameter "filter" to deleteMany\(\) must be an object, got "null"/
+        );
+      });
+
+      it('throws error for non-object filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany(123, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $and filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany({ $and: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $or filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany({ $or: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('throws error for empty $nor filter when requireFilter is true', async function() {
+        await assert.rejects(
+          Person.deleteMany({ $nor: [{}] }, { requireFilter: true }),
+          /Empty or invalid filter not allowed with requireFilter enabled/
+        );
+      });
+
+      it('deletes with non-empty filter when requireFilter is true', async function() {
+        const result = await Person.deleteMany(
+          { name: { $in: ['Alice', 'Bob'] } },
+          { requireFilter: true }
+        );
+        assert.strictEqual(result.deletedCount, 2);
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
+
+      it('deletes all documents with empty filter when requireFilter is false', async function() {
+        const result = await Person.deleteMany(
+          {},
+          { requireFilter: false }
+        );
+        assert.strictEqual(result.deletedCount, 2);
+        const count = await Person.countDocuments();
+        assert.strictEqual(count, 0);
+      });
     });
   });
 });

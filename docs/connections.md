@@ -16,7 +16,7 @@ You can also specify several more parameters in the `uri`:
 mongoose.connect('mongodb://username:password@host:port/database?options...');
 ```
 
-See the [mongodb connection string spec](http://www.mongodb.com/docs/manual/reference/connection-string/) for more details.
+See the [mongodb connection string spec](https://www.mongodb.com/docs/manual/reference/connection-string/) for more details.
 
 <ul class="toc">
   <li><a href="#buffering">Buffering</a></li>
@@ -138,7 +138,7 @@ on to the underlying MongoDB driver.
 mongoose.connect(uri, options);
 ```
 
-A full list of options can be found on the [MongoDB Node.js driver docs for `MongoClientOptions`](https://mongodb.github.io/node-mongodb-native/4.2/interfaces/MongoClientOptions.html).
+A full list of options can be found on the [MongoDB Node.js driver docs for `MongoClientOptions`](https://mongodb.github.io/node-mongodb-native/7.0/interfaces/MongoClientOptions.html).
 Mongoose passes options to the driver without modification, modulo a few
 exceptions that are explained below.
 
@@ -149,8 +149,7 @@ exceptions that are explained below.
 
 Below are some of the options that are important for tuning Mongoose.
 
-* `promiseLibrary`    - Sets the [underlying driver's promise library](http://mongodb.github.io/node-mongodb-native/3.1/api/MongoClient.html).
-* `maxPoolSize`       - The maximum number of sockets the MongoDB driver will keep open for this connection. By default, `maxPoolSize` is 100. Keep in mind that MongoDB only allows one operation per socket at a time, so you may want to increase this if you find you have a few slow queries that are blocking faster queries from proceeding. See [Slow Trains in MongoDB and Node.js](http://thecodebarbarian.com/slow-trains-in-mongodb-and-nodejs). You may want to decrease `maxPoolSize` if you are running into [connection limits](https://www.mongodb.com/docs/atlas/reference/atlas-limits/#connection-limits-and-cluster-tier).
+* `maxPoolSize`       - The maximum number of sockets the MongoDB driver will keep open for this connection. By default, `maxPoolSize` is 100. Keep in mind that MongoDB only allows one operation per socket at a time, so you may want to increase this if you find you have a few slow queries that are blocking faster queries from proceeding. See [Slow Trains in MongoDB and Node.js](https://thecodebarbarian.com/slow-trains-in-mongodb-and-nodejs). You may want to decrease `maxPoolSize` if you are running into [connection limits](https://www.mongodb.com/docs/atlas/reference/atlas-limits/#connection-limits-and-cluster-tier).
 * `minPoolSize`       - The minimum number of sockets the MongoDB driver will keep open for this connection. The MongoDB driver may close sockets that have been inactive for some time. You may want to increase `minPoolSize` if you expect your app to go through long idle times and want to make sure your sockets stay open to avoid slow trains when activity picks up.
 * `socketTimeoutMS`   - How long the MongoDB driver will wait before killing a socket due to inactivity *after initial connection*. A socket may be inactive because of either no activity or a long-running operation. `socketTimeoutMS` defaults to 0, which means Node.js will not time out the socket due to inactivity. This option is passed to [Node.js `socket#setTimeout()` function](https://nodejs.org/api/net.html#net_socket_settimeout_timeout_callback) after the MongoDB driver successfully completes.
 * `family`            - Whether to connect using IPv4 or IPv6. This option passed to [Node.js' `dns.lookup()`](https://nodejs.org/api/dns.html#dns_dns_lookup_hostname_options_callback) function. If you don't specify this option, the MongoDB driver will try IPv6 first and then IPv4 if IPv6 fails. If your `mongoose.connect(uri)` call takes a long time, try `mongoose.connect(uri, { family: 4 })`
@@ -208,15 +207,13 @@ for (let i = 0; i < 3; ++i) {
 }
 ```
 
-## Callback {#callback}
+## Using Promises and Async/Await {#promises-async-await}
 
-The `connect()` function also accepts a callback parameter and returns a
-[promise](promises.html).
+The `connect()` function returns a [promise](promises.html).
 
 ```javascript
-mongoose.connect(uri, options, function(error) {
-  // Check error in initial connection. There is no 2nd param to the callback.
-});
+// Using async/await. The `mongoose.connect()` promise resolves to mongoose instance.
+await mongoose.connect(uri, options);
 
 // Or using promises
 mongoose.connect(uri, options).then(
@@ -307,7 +304,7 @@ conn.on('close', () => console.log('close'));
 ## A note about keepAlive {#keepAlive}
 
 Before Mongoose 5.2.0, you needed to enable the `keepAlive` option to initiate [TCP keepalive](https://tldp.org/HOWTO/TCP-Keepalive-HOWTO/overview.html) to prevent `"connection closed"` errors.
-However, `keepAlive` has been `true` by default since Mongoose 5.2.0, and the `keepAlive` is deprecated as of Mongoose 7.2.0.
+However, `keepAlive` has been `true` by default since Mongoose 5.2.0, and `keepAlive` is deprecated as of Mongoose 7.2.0.
 Please remove `keepAlive` and `keepAliveInitialDelay` options from your Mongoose connections.
 
 ## Replica Set Connections {#replicaset_connections}
@@ -402,8 +399,7 @@ if (err.name === 'MongooseServerSelectionError') {
 ## Multi-mongos support {#mongos_connections}
 
 You can also connect to multiple [mongos](https://www.mongodb.com/docs/manual/reference/program/mongos/) instances
-for high availability in a sharded cluster. You do
-[not need to pass any special options to connect to multiple mongos](http://mongodb.github.io/node-mongodb-native/3.0/tutorials/connect/#connect-to-sharded-cluster) in mongoose 5.x.
+for high availability in a sharded cluster.
 
 ```javascript
 // Connect to 2 mongos servers
@@ -496,7 +492,7 @@ Your business logic can then `require()` or `import` the connection it needs.
 ## Connection Pools {#connection_pools}
 
 Each `connection`, whether created with `mongoose.connect` or
-`mongoose.createConnection` are all backed by an internal configurable
+`mongoose.createConnection`, is backed by an internal configurable
 connection pool defaulting to a maximum size of 100. Adjust the pool size
 using your connection options:
 
@@ -562,7 +558,7 @@ app.listen(3000);
 
 The following is an example of pattern (2).
 Pattern (2) is more flexible and better for use cases with > 10k tenants and > 1 requests/second.
-Because each tenant has a separate connection pool, one tenants' slow operations will have minimal impact on other tenants.
+Because each tenant has a separate connection pool, one tenant's slow operations will have minimal impact on other tenants.
 However, this pattern is harder to implement and manage in production.
 In particular, [MongoDB does have a limit on the number of open connections](https://www.mongodb.com/blog/post/tuning-mongodb--linux-to-allow-for-tens-of-thousands-connections), and [MongoDB Atlas has separate limits on the number of open connections](https://www.mongodb.com/docs/atlas/reference/atlas-limits), so you need to make sure the total number of sockets in your connection pools doesn't go over MongoDB's limits.
 

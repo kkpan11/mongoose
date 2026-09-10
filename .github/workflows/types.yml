@@ -1,0 +1,51 @@
+name: Typescript Types
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/types.yml'
+      - 'package.json'
+      - 'types/**'
+      - 'test/types/**'
+  push:
+    paths:
+      - '.github/workflows/types.yml'
+      - 'package.json'
+      - 'types/**'
+      - 'test/types/**'
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint TS-Files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Lint TS-Files
+        run: npm run lint-ts
+
+  test-ts-types:
+    needs:
+      - lint
+    runs-on: ubuntu-latest
+    name: Test Typescript Types
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Typings
+        run: npm run test:types

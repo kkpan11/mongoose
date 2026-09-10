@@ -1,5 +1,5 @@
-import { Schema, model, Document, Model, Types } from 'mongoose';
-import { expectType } from 'tsd';
+import { Schema, model, Model, Types } from 'mongoose';
+import { expect } from 'tstyche';
 
 interface ITest {
   map1: Map<string, number>,
@@ -7,7 +7,7 @@ interface ITest {
   map3: Map<string, number>
 }
 
-const schema: Schema = new Schema<ITest>({
+const schema = new Schema<ITest>({
   map1: {
     type: Map,
     of: Number
@@ -70,7 +70,7 @@ function gh10575() {
 function gh10872(): void {
   const doc = new Test({});
 
-  doc.toJSON().map1.foo;
+  doc.toJSON({ flattenMaps: true }).map1.foo;
 }
 
 function gh13755() {
@@ -83,5 +83,5 @@ function gh13755() {
 
   const TestModel = model('Test', testSchema);
   const doc = new TestModel();
-  expectType<Map<string, string> | undefined | null>(doc.instance);
+  expect(doc.instance).type.toBe<Map<string, string> | undefined | null>();
 }

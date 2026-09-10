@@ -209,9 +209,8 @@ describe('QueryCursor', function() {
     it('with pre-find hooks (gh-5096)', async function() {
       const schema = new Schema({ name: String });
       let called = 0;
-      schema.pre('find', function(next) {
+      schema.pre('find', function() {
         ++called;
-        next();
       });
 
       db.deleteModel(/Test/);
@@ -478,6 +477,41 @@ describe('QueryCursor', function() {
     assert.equal(cursor.options.readPreference, read);
   });
 
+  it('preserves options object identity after opening the cursor', async function() {
+    // Arrange
+    const userSchema = new Schema({ name: String });
+    const User = db.model('User', userSchema);
+    const cursor = User.find().cursor({ batchSize: 1 });
+    const options = cursor.options;
+
+    // Act
+    await once(cursor, 'cursor');
+    await cursor.close();
+
+    // Assert
+    assert.strictEqual(cursor.options, options);
+  });
+
+  it('strips middleware added to options before opening the cursor', async function() {
+    // Arrange
+    let continuePreHook;
+    const preHookPromise = new Promise(resolve => { continuePreHook = resolve; });
+    const userSchema = new Schema({ name: String });
+    userSchema.pre('find', () => preHookPromise);
+    const User = db.model('User', userSchema);
+    const cursor = User.find().cursor();
+    const cursorOpened = once(cursor, 'cursor');
+    cursor.options.middleware = false;
+
+    // Act
+    continuePreHook();
+    await cursorOpened;
+    await cursor.close();
+
+    // Assert
+    assert.ok(!Object.hasOwn(cursor.options, 'middleware'));
+  });
+
   it('eachAsync() with parallel > numDocs (gh-8422)', async function() {
     const schema = new mongoose.Schema({ name: String });
     const Movie = db.model('Movie', schema);
@@ -540,7 +574,7 @@ describe('QueryCursor', function() {
     setTimeout(() => {
       assert.equal(closeEventTriggeredCount, 1);
       done();
-    }, 20);
+    }, 200);
   });
 
   it('closing query cursor emits `close` event only once with stream pause/resume (gh-10876)', function(done) {
@@ -709,7 +743,9 @@ describe('QueryCursor', function() {
 
   it('post hooks (gh-9435)', async function() {
     const schema = new mongoose.Schema({ name: String });
+    const postHookDocs = [];
     schema.post('find', function(docs) {
+      postHookDocs.push(docs.map(doc => doc.name));
       docs.forEach(doc => { doc.name = doc.name.toUpperCase(); });
     });
     const Movie = db.model('Movie', schema);
@@ -724,6 +760,8 @@ describe('QueryCursor', function() {
     const arr = [];
     await Movie.find().sort({ name: -1 }).cursor().
       eachAsync(doc => arr.push(doc.name));
+
+    assert.deepEqual(postHookDocs, [['Kickboxer'], ['Ip Man'], ['Enter the Dragon']]);
     assert.deepEqual(arr, ['KICKBOXER', 'IP MAN', 'ENTER THE DRAGON']);
   });
 
@@ -883,8 +921,8 @@ describe('QueryCursor', function() {
   it('throws if calling skipMiddlewareFunction() with non-empty array (gh-13411)', async function() {
     const schema = new mongoose.Schema({ name: String });
 
-    schema.pre('find', (next) => {
-      next(mongoose.skipMiddlewareFunction([{ name: 'bar' }]));
+    schema.pre('find', () => {
+      throw mongoose.skipMiddlewareFunction([{ name: 'bar' }]);
     });
 
     const Movie = db.model('Movie', schema);
@@ -905,6 +943,10 @@ describe('QueryCursor', function() {
 
   it('returns the underlying Node driver cursor with getDriverCursor()', async function() {
     const schema = new mongoose.Schema({ name: String });
+    // Add some middleware to ensure the cursor hasn't been created yet when `cursor()` is called.
+    schema.pre('find', async function() {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    });
 
     const Movie = db.model('Movie', schema);
 
@@ -927,7 +969,7 @@ describe('QueryCursor', function() {
     const TestModel = db.model('Test', mongoose.Schema({ name: String }));
 
     const stream = await TestModel.find().cursor();
-    await once(stream, 'cursor');
+    assert.ok(stream.cursor);
     assert.ok(!stream.cursor.closed);
 
     stream.destroy();
@@ -939,7 +981,9 @@ describe('QueryCursor', function() {
 
   it('handles destroy() before cursor is created (gh-14966)', async function() {
     db.deleteModel(/Test/);
-    const TestModel = db.model('Test', mongoose.Schema({ name: String }));
+    const schema = mongoose.Schema({ name: String });
+    schema.pre('find', () => new Promise(resolve => setTimeout(resolve, 10)));
+    const TestModel = db.model('Test', schema);
 
     const stream = await TestModel.find().cursor();
     assert.ok(!stream.cursor);
@@ -948,6 +992,38 @@ describe('QueryCursor', function() {
     await once(stream, 'cursor');
     assert.ok(stream.destroyed);
     assert.ok(stream.cursor.closed);
+  });
+
+  it('applies sanitizeFilter (gh-15720)', async function() {
+    const cursor = Model.find({ name: { $ne: null } }).
+      setOptions({ sanitizeFilter: true }).
+      cursor();
+
+    // Operator injection gets wrapped in `$eq`, so casting the object against
+    // the `name` string path fails rather than matching every document.
+    const err = await cursor.next().then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.name, 'CastError');
+  });
+
+  it('sanitizeFilter allows trusted operators (gh-15720)', async function() {
+    const cursor = Model.find({ name: mongoose.trusted({ $ne: null }) }).
+      setOptions({ sanitizeFilter: true }).
+      sort({ name: 1 }).
+      cursor();
+
+    const doc = await cursor.next();
+    assert.equal(doc.name, 'Axl');
+  });
+
+  it('sanitizeFilter rejects $where (gh-15720)', async function() {
+    const cursor = Model.find({ $where: 'this.name === "Axl"' }).
+      setOptions({ sanitizeFilter: true }).
+      cursor();
+
+    const err = await cursor.next().then(() => null, err => err);
+    assert.ok(err);
+    assert.equal(err.message, '$where is not allowed with sanitizeFilter');
   });
 });
 

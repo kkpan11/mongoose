@@ -436,7 +436,7 @@ describe('model query casting', function() {
 
   describe('$elemMatch', function() {
     it('should cast String to ObjectId in $elemMatch', async function() {
-      const commentId = new mongoose.Types.ObjectId(111);
+      const commentId = new mongoose.Types.ObjectId('1'.repeat(24));
 
       const post = new BlogPostB({ comments: [{ _id: commentId }] });
       const id = post._id.toString();
@@ -447,7 +447,7 @@ describe('model query casting', function() {
     });
 
     it('should cast String to ObjectId in $elemMatch inside $not', async function() {
-      const commentId = new mongoose.Types.ObjectId(111);
+      const commentId = new mongoose.Types.ObjectId('1'.repeat(24));
 
       const post = new BlogPostB({ comments: [{ _id: commentId }] });
       const id = post._id.toString();
@@ -825,6 +825,34 @@ describe('model query casting', function() {
     assert.ok(res);
     assert.equal(res.length, 2);
     assert.deepStrictEqual(res.map(doc => doc.arr[1].id), ['two', 'three']);
+  });
+
+  it('should not mutate original object with UUID in query with $elemMatch (gh-15364)', async function() {
+    const schemaParticipant = new Schema(
+      {
+        user: mongoose.Schema.Types.UUID
+      },
+      { _id: false }
+    );
+
+    const TestSchema = new Schema(
+      {
+        participants: { type: [schemaParticipant] },
+        date: { type: Number }
+      }
+    );
+
+    const Test = db.model('Test', TestSchema);
+
+    const peer = {
+      user: new mongoose.mongo.BSON.UUID('1583b99d-8462-4343-8dfd-9105252e5662')
+    };
+
+    const originalUser = peer.user;
+
+    await Test.findOne({ participants: { $elemMatch: peer } });
+
+    assert.strictEqual(peer.user, originalUser);
   });
 });
 

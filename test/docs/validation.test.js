@@ -161,7 +161,7 @@ describe('validation docs', function() {
    * See the [FAQ](/docs/faq.html) for more information.
    */
 
-  it('The `unique` Option is Not a Validator', function(done) {
+  it('The `unique` Option is Not a Validator', async function() {
     const uniqueUsernameSchema = new Schema({
       username: {
         type: String,
@@ -172,43 +172,30 @@ describe('validation docs', function() {
     const U2 = db.model('U2', uniqueUsernameSchema);
     // acquit:ignore:start
     this.timeout(5000);
-    let remaining = 2;
     // acquit:ignore:end
 
     const dup = [{ username: 'Val' }, { username: 'Val' }];
     // Race condition! This may save successfully, depending on whether
     // MongoDB built the index before writing the 2 docs.
-    U1.create(dup).
-      then(() => {
-        // acquit:ignore:start
-        --remaining || done();
-        // acquit:ignore:end
-      }).
-      catch(err => {
-        // acquit:ignore:start
-        err;
-        --remaining || done();
-        // acquit:ignore:end
-      });
+    await U1.create(dup).catch(err => {
+      // May have an error here depending on timing
+      err?.message;
+    });
 
     // You need to wait for Mongoose to finish building the `unique`
     // index before writing. You only need to build indexes once for
     // a given collection, so you normally don't need to do this
     // in production. But, if you drop the database between tests,
     // you will need to use `init()` to wait for the index build to finish.
-    U2.init().
-      then(() => U2.create(dup)).
-      catch(error => {
-        // `U2.create()` will error, but will *not* be a mongoose validation error, it will be
-        // a duplicate key error.
-        // See: https://masteringjs.io/tutorials/mongoose/e11000-duplicate-key
-        assert.ok(error);
-        assert.ok(!error.errors);
-        assert.ok(error.message.indexOf('duplicate key error') !== -1);
-        // acquit:ignore:start
-        --remaining || done();
-        // acquit:ignore:end
-      });
+    await U2.init();
+    await U2.create(dup).catch(error => {
+      // `U2.create()` will error, but will *not* be a mongoose validation error, it will be
+      // a duplicate key error.
+      // See: https://masteringjs.io/tutorials/mongoose/e11000-duplicate-key
+      assert.ok(error);
+      assert.ok(!error.errors);
+      assert.ok(error.message.indexOf('duplicate key error') !== -1);
+    });
   });
 
   /**
@@ -381,8 +368,10 @@ describe('validation docs', function() {
     err.errors['numWheels'].message;
     // acquit:ignore:start
     assert.equal(err.errors['numWheels'].name, 'CastError');
-    assert.equal(err.errors['numWheels'].message,
-      'Cast to Number failed for value "not a number" (type string) at path "numWheels"');
+    assert.match(
+      err.errors['numWheels'].message,
+      /^Cast to Number failed for value "not a number" \(type string\) at path "numWheels"/
+    );
     // acquit:ignore:end
   });
 
@@ -435,7 +424,7 @@ describe('validation docs', function() {
 
   it('Global SchemaType Validation', async function() {
     // Add a custom validator to all strings
-    mongoose.Schema.Types.String.set('validate', v => v == null || v > 0);
+    mongoose.Schema.Types.String.set('validate', v => v == null || v.length > 0);
 
     const userSchema = new Schema({
       name: String,

@@ -101,15 +101,17 @@ describe('document.populate', function() {
   let db, B, User;
   let user1, user2, post, _id;
 
-  before(function() {
+  before(function createConnection() {
     db = start();
   });
 
-  beforeEach(() => db.deleteModel(/.*/));
+  beforeEach(function deleteModels() {
+    db.deleteModel(/.*/);
+  });
   afterEach(() => require('./util').clearTestData(db));
   afterEach(() => require('./util').stopRemainingOps(db));
 
-  beforeEach(async function() {
+  beforeEach(async function setupData() {
     B = db.model('BlogPost', BlogPostSchema);
     User = db.model('User', UserSchema);
 
@@ -203,7 +205,7 @@ describe('document.populate', function() {
     param.select = '-email';
     param.options = { sort: 'name' };
     param.path = '_creator';
-    post.populate(param);
+    await post.populate(param);
     param.path = 'fans';
 
     await p.populate(param);
@@ -841,7 +843,7 @@ describe('document.populate', function() {
   describe('#populated() with virtuals (gh-7440)', function() {
     let Team;
 
-    beforeEach(function() {
+    beforeEach(function setupVirtualPopulateModels() {
       const teamSchema = mongoose.Schema({
         name: String,
         captain: String
@@ -895,7 +897,7 @@ describe('document.populate', function() {
     let Team;
     let Player;
 
-    beforeEach(function() {
+    beforeEach(function setupEmbeddedGetterPopulateModels() {
       const playerSchema = mongoose.Schema({
         _id: String
       });
@@ -1114,5 +1116,42 @@ describe('document.populate', function() {
     assert.equal(docD.refA.name, 'test 1');
     assert.equal(docD.refB.title, 'test 2');
     assert.equal(docD.refC.content, 'test 3');
+  });
+
+  it('handles re-populating map of array of refs (gh-9359)', async function() {
+    const UserSchema = mongoose.Schema({
+      columns: { type: Map, of: [{ type: 'ObjectId', ref: 'Test1' }] }
+    });
+    const CardSchema = mongoose.Schema({
+      title: { type: String },
+      sequence: { type: 'ObjectId', ref: 'Test2' }
+    });
+    const SequenceSchema = mongoose.Schema({
+      foo: { type: String }
+    });
+
+    const Sequence = db.model('Test2', SequenceSchema);
+    const Card = db.model('Test1', CardSchema);
+    const User = db.model('Test', UserSchema);
+
+    const sequence = await Sequence.create({ foo: 'bar' });
+    const card1 = await Card.create({ title: 'card1', sequence });
+    const card2 = await Card.create({ title: 'card2', sequence });
+    const card3 = await Card.create({ title: 'card3' });
+    const card4 = await Card.create({ title: 'card4', sequence });
+    await User.create({
+      columns: { key1: [card1, card2], key2: [card3, card4] }
+    });
+
+    const user = await User.findOne();
+    await user.populate('columns.$*');
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.title), ['card1', 'card2']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.title), ['card3', 'card4']);
+    await user.populate('columns.$*.sequence');
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.title), ['card1', 'card2']);
+    assert.deepStrictEqual(user.columns.get('key1').map(subdoc => subdoc.sequence.foo), ['bar', 'bar']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.title), ['card3', 'card4']);
+    assert.deepStrictEqual(user.columns.get('key2').map(subdoc => subdoc.sequence?.foo), [undefined, 'bar']);
+
   });
 });

@@ -55,8 +55,7 @@ EmployeeSchema.statics.findByDepartment = function() {
 EmployeeSchema.path('department').validate(function(value) {
   return /[a-zA-Z]/.test(value);
 }, 'Invalid name');
-const employeeSchemaPreSaveFn = function(next) {
-  next();
+const employeeSchemaPreSaveFn = function() {
 };
 EmployeeSchema.pre('save', employeeSchemaPreSaveFn);
 EmployeeSchema.set('toObject', { getters: true, virtuals: false });
@@ -154,6 +153,30 @@ describe('model', function() {
       const doc = new DiscriminatorModel();
       assert.equal(doc.virtualA, 'virtualA');
       assert.equal(doc.virtualB, 'virtualB');
+    });
+
+    it('can define statics using schema options (gh-15556)', function() {
+      const baseSchema = new mongoose.Schema({
+        name: String
+      }, {
+        statics: {
+          staticFunction: () => 'base'
+        }
+      });
+
+      const discriminatorSchema = new mongoose.Schema({
+        prop: String
+      }, {
+        statics: {
+          staticFunction: () => 'discriminator',
+          otherStaticFunction: () => 42
+        }
+      });
+      const BaseModel = db.model('Test', baseSchema);
+      const DiscriminatorModel = BaseModel.discriminator('Test1', discriminatorSchema);
+
+      assert.equal(DiscriminatorModel.staticFunction(), 'discriminator');
+      assert.equal(DiscriminatorModel.otherStaticFunction(), 42);
     });
 
     it('sets schema root discriminator mapping', function(done) {
@@ -317,6 +340,44 @@ describe('model', function() {
         assert.equal(gender.options.default, 'F');
       });
 
+      it('allows discriminator schema to override required true with required false and allowNull false', function() {
+        const baseSchema = new Schema({
+          name: { type: String, required: true }
+        });
+        const Base = db.model('Test1', baseSchema);
+        const Child = Base.discriminator('Child', new Schema({
+          name: { type: String, required: false, allowNull: false }
+        }));
+
+        assert.equal(Base.schema.path('name').isRequired, true);
+        assert.equal(Child.schema.path('name').isRequired, false);
+        assert.equal(Child.schema.path('name').validators.length, 1);
+        assert.equal(Child.schema.path('name').validators[0].type, 'allowNull');
+
+        assert.ifError(new Child({}).validateSync());
+
+        const err = new Child({ name: null }).validateSync();
+        assert.ok(err);
+        assert.ok(err.errors['name']);
+        assert.equal(err.errors['name'].kind, 'allowNull');
+      });
+
+      it('allows discriminator schema to override allowNull false with allowNull true', function() {
+        const baseSchema = new Schema({
+          name: { type: String, allowNull: false }
+        });
+        const Base = db.model('Test2', baseSchema);
+        const Child = Base.discriminator('Child', new Schema({
+          name: { type: String, allowNull: true }
+        }));
+
+        assert.equal(Base.schema.path('name').validators.length, 1);
+        assert.equal(Base.schema.path('name').validators[0].type, 'allowNull');
+        assert.equal(Child.schema.path('name').validators.length, 0);
+
+        assert.ifError(new Child({ name: null }).validateSync());
+      });
+
       it('inherits methods', function() {
         const employee = new Employee();
         assert.strictEqual(employee.getFullName, PersonSchema.methods.getFullName);
@@ -337,10 +398,10 @@ describe('model', function() {
       });
 
       it('does not inherit indexes', function() {
-        assert.deepEqual(Person.schema.indexes(), [[{ name: 1 }, { background: true }]]);
+        assert.deepEqual(Person.schema.indexes(), [[{ name: 1 }, {}]]);
         assert.deepEqual(
           Employee.schema.indexes(),
-          [[{ department: 1 }, { background: true, partialFilterExpression: { __t: 'Employee' } }]]
+          [[{ department: 1 }, { partialFilterExpression: { __t: 'Employee' } }]]
         );
       });
 
@@ -372,9 +433,8 @@ describe('model', function() {
 
       it('deduplicates hooks (gh-2945)', function() {
         let called = 0;
-        function middleware(next) {
+        function middleware() {
           ++called;
-          next();
         }
 
         function ActivityBaseSchema() {
@@ -560,14 +620,12 @@ describe('model', function() {
         });
         let childCalls = 0;
         let childValidateCalls = 0;
-        const preValidate = function preValidate(next) {
+        const preValidate = function preValidate() {
           ++childValidateCalls;
-          next();
         };
         childSchema.pre('validate', preValidate);
-        childSchema.pre('save', function(next) {
+        childSchema.pre('save', function() {
           ++childCalls;
-          next();
         });
 
         const personSchema = new Schema({
@@ -579,9 +637,8 @@ describe('model', function() {
           heir: childSchema
         });
         let parentCalls = 0;
-        parentSchema.pre('save', function(next) {
+        parentSchema.pre('save', function() {
           ++parentCalls;
-          next();
         });
 
         const Person = db.model('Person', personSchema);
@@ -677,7 +734,7 @@ describe('model', function() {
           });
         } catch (error) {
           threw = true;
-          assert.equal(error.name, 'MongooseError');
+          assert.equal(error.name, 'MongooseError', error);
           assert.equal(error.message, 'Discriminator "defaultAdvisor" not ' +
             'found for model "Test"');
         }
@@ -1234,18 +1291,16 @@ describe('model', function() {
         { message: String },
         { discriminatorKey: 'kind', _id: false }
       );
-      eventSchema.pre('validate', function(next) {
+      eventSchema.pre('validate', function() {
         counters.eventPreValidate++;
-        next();
       });
 
       eventSchema.post('validate', function() {
         counters.eventPostValidate++;
       });
 
-      eventSchema.pre('save', function(next) {
+      eventSchema.pre('save', function() {
         counters.eventPreSave++;
-        next();
       });
 
       eventSchema.post('save', function() {
@@ -1256,18 +1311,16 @@ describe('model', function() {
         product: String
       }, { _id: false });
 
-      purchasedSchema.pre('validate', function(next) {
+      purchasedSchema.pre('validate', function() {
         counters.purchasePreValidate++;
-        next();
       });
 
       purchasedSchema.post('validate', function() {
         counters.purchasePostValidate++;
       });
 
-      purchasedSchema.pre('save', function(next) {
+      purchasedSchema.pre('save', function() {
         counters.purchasePreSave++;
-        next();
       });
 
       purchasedSchema.post('save', function() {
@@ -1602,9 +1655,9 @@ describe('model', function() {
 
     const post = await Post.create({});
 
-    await UserWithPost.create({ postId: post._id });
+    const { _id } = await UserWithPost.create({ postId: post._id });
 
-    const user = await User.findOne().populate({ path: 'post' });
+    const user = await User.findById(_id).populate({ path: 'post' });
 
     assert.ok(user.postId);
   });
@@ -1991,6 +2044,32 @@ describe('model', function() {
     assert(array.arrayEvent[0].element);
   });
 
+  it('supports single nested `discriminators` path option without calling path().discriminator()', async function() {
+    const shapeSchema = new Schema({ name: String }, { discriminatorKey: 'kind', _id: false });
+    const circleSchema = new Schema({ radius: Number }, { _id: false });
+    const squareSchema = new Schema({ side: Number }, { _id: false });
+
+    const schema = new Schema({
+      shape: {
+        type: shapeSchema,
+        discriminators: {
+          Circle: circleSchema,
+          Square: squareSchema
+        }
+      }
+    });
+
+    const Test = db.model('gh_discriminators_path_option', schema);
+    await Test.create({ shape: { kind: 'Circle', radius: 5 } });
+    await Test.create({ shape: { kind: 'Square', side: 10 } });
+
+    const docs = await Test.find().sort({ 'shape.kind': 1 }).lean();
+    assert.equal(docs[0].shape.kind, 'Circle');
+    assert.equal(docs[0].shape.radius, 5);
+    assert.equal(docs[1].shape.kind, 'Square');
+    assert.equal(docs[1].shape.side, 10);
+  });
+
   it('handles discriminators on maps of subdocuments (gh-11720)', async function() {
     const shapeSchema = Schema({ name: String }, { discriminatorKey: 'kind' });
     const schema = Schema({ shape: { type: Map, of: shapeSchema } });
@@ -2120,7 +2199,7 @@ describe('model', function() {
     const childSchema = new Schema({}, { typeKey: 'bar' });
     assert.throws(() => {
       Base.discriminator('model-discriminator-custom1', childSchema);
-    }, { message: 'Can\'t customize discriminator option typeKey (can only modify toJSON, toObject, _id, id, virtuals, methods)' });
+    }, { message: 'Can\'t customize discriminator option typeKey (can only modify toJSON, toObject, _id, id, virtuals, methods, statics)' });
   });
   it('handles customizable discriminator options gh-12135', function() {
     const baseSchema = Schema({}, { toJSON: { virtuals: true } });
@@ -2324,9 +2403,8 @@ describe('model', function() {
     });
 
     const subdocumentPreSaveHooks = [];
-    subdocumentSchema.pre('save', function(next) {
+    subdocumentSchema.pre('save', function() {
       subdocumentPreSaveHooks.push(this);
-      next();
     });
 
     const schema = mongoose.Schema({
@@ -2335,9 +2413,8 @@ describe('model', function() {
     }, { discriminatorKey: 'type' });
 
     const documentPreSaveHooks = [];
-    schema.pre('save', function(next) {
+    schema.pre('save', function() {
       documentPreSaveHooks.push(this);
-      next();
     });
 
     const Document = db.model('Document', schema);
@@ -2345,9 +2422,8 @@ describe('model', function() {
     const discriminatorSchema = mongoose.Schema({});
 
     const discriminatorPreSaveHooks = [];
-    discriminatorSchema.pre('save', function(next) {
+    discriminatorSchema.pre('save', function() {
       discriminatorPreSaveHooks.push(this);
-      next();
     });
 
     const Discriminator = Document.discriminator('Discriminator', discriminatorSchema);
@@ -2375,5 +2451,123 @@ describe('model', function() {
     assert.equal(discriminatorPreSaveHooks[0], discriminator);
     assert.equal(documentPreSaveHooks.length, 1);
     assert.equal(documentPreSaveHooks[0], discriminator);
+  });
+
+  it('does not duplicate _indexes when base and discriminator schemas share nested schema (gh-15966)', async function() {
+    // Arrange
+    const addressSchema = new Schema({ city: String, street: String }, { _id: false });
+    const orderSchemaDefinition = {
+      customerId: { type: Schema.Types.ObjectId },
+      createdAt: Date,
+      orderNumber: String,
+      billingAddress: addressSchema,
+      shippingAddress: addressSchema,
+      notes: [{ message: String }]
+    };
+
+    const orderSchema = new Schema(orderSchemaDefinition, { autoIndex: false });
+    orderSchema.index({ customerId: 1, createdAt: -1 });
+    orderSchema.index({ orderNumber: 1, customerId: 1 });
+    orderSchema.index({ 'billingAddress.city': 1, customerId: 1 });
+
+    const Order = db.model('Order', orderSchema);
+    const wholesaleOrderSchema = new Schema(orderSchemaDefinition, { autoIndex: false });
+
+    // Act
+    const WholesaleOrder = Order.discriminator('WholesaleOrder', wholesaleOrderSchema, { clone: false });
+    const wholesaleDiff = await WholesaleOrder.diffIndexes();
+    const orderDiff = await Order.diffIndexes();
+
+    // Assert
+    assert.deepStrictEqual(orderSchema._indexes, [
+      [{ customerId: 1, createdAt: -1 }, {}],
+      [{ orderNumber: 1, customerId: 1 }, {}],
+      [{ 'billingAddress.city': 1, customerId: 1 }, {}]
+    ]);
+    assert.deepStrictEqual(wholesaleOrderSchema._indexes, []);
+
+    assert.deepStrictEqual(orderDiff, {
+      toDrop: [],
+      toCreate: [
+        { customerId: 1, createdAt: -1 },
+        { orderNumber: 1, customerId: 1 },
+        { 'billingAddress.city': 1, customerId: 1 }
+      ]
+    });
+    assert.deepStrictEqual(wholesaleDiff, {
+      toDrop: [],
+      toCreate: []
+    });
+  });
+
+  it('preserves discriminator-specific indexes (gh-15966)', async function() {
+    // Arrange
+    const addressSchema = new Schema({ city: String, street: String }, { _id: false });
+    const orderSchemaDefinition = {
+      customerId: { type: Schema.Types.ObjectId },
+      billingAddress: addressSchema,
+      shippingAddress: addressSchema
+    };
+
+    const orderSchema = new Schema(orderSchemaDefinition, { autoIndex: false });
+    orderSchema.index({ customerId: 1 });
+
+    const Order = db.model('Order', orderSchema);
+
+    const wholesaleOrderSchema = new Schema({ ...orderSchemaDefinition, vendorCode: String }, { autoIndex: false });
+    wholesaleOrderSchema.index({ vendorCode: 1 });
+
+    // Act
+    const WholesaleOrder = Order.discriminator('WholesaleOrder', wholesaleOrderSchema, { clone: false });
+    const orderDiff = await Order.diffIndexes();
+    const wholesaleDiff = await WholesaleOrder.diffIndexes();
+
+    // Assert
+    assert.deepStrictEqual(orderSchema._indexes, [
+      [{ customerId: 1 }, {}]
+    ]);
+    assert.deepStrictEqual(wholesaleOrderSchema._indexes, [
+      [{ vendorCode: 1 }, { partialFilterExpression: { __t: 'WholesaleOrder' } }]
+    ]);
+
+    assert.deepStrictEqual(orderDiff, {
+      toDrop: [],
+      toCreate: [
+        { customerId: 1 }
+      ]
+    });
+
+    assert.deepStrictEqual(wholesaleDiff, {
+      toDrop: [],
+      toCreate: [
+        { vendorCode: 1 }
+      ]
+    });
+  });
+
+  it('does not duplicate callQueue when base and discriminator schemas share nested schema (gh-15966)', function() {
+    // Arrange
+    const addressSchema = new Schema({ city: String, street: String }, { _id: false });
+    const orderSchemaDefinition = {
+      customerId: { type: Schema.Types.ObjectId },
+      billingAddress: addressSchema,
+      shippingAddress: addressSchema,
+      notes: [{ message: String }]
+    };
+
+    const orderSchema = new Schema(orderSchemaDefinition);
+    orderSchema.queue('testMethod', ['arg1']);
+
+    const Order = db.model('Order', orderSchema);
+    const wholesaleOrderSchema = new Schema(orderSchemaDefinition);
+
+    // Act
+    Order.discriminator('WholesaleOrder', wholesaleOrderSchema, { clone: false });
+
+    // Assert - callQueue should have exactly 1 entry from base, not duplicated
+    const testMethodCalls = wholesaleOrderSchema.callQueue.filter(
+      ([methodName]) => methodName === 'testMethod'
+    );
+    assert.strictEqual(testMethodCalls.length, 1);
   });
 });

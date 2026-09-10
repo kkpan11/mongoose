@@ -79,18 +79,33 @@ describe('model', function() {
       assert.deepEqual(['food'], Object.keys(err.errors));
     });
 
-    it('supports projection (gh-9209)', function() {
+    it('supports projection (gh-16082) (gh-9209)', function() {
       const schema = new Schema({
         prop: String,
         arr: [String]
       });
       const Model = db.model('Test2', schema);
 
-      const doc = Model.hydrate({ prop: 'test' }, { arr: 0 });
-
+      let doc = Model.hydrate({ prop: 'test' }, { arr: 0 });
       assert.equal(doc.isNew, false);
       assert.equal(doc.isModified(), false);
       assert.ok(!doc.$__delta());
+      assert.strictEqual(doc.prop, 'test');
+      // Array implicit default of `[]` shouldn't apply
+      assert.strictEqual(doc.arr, undefined);
+
+      doc = Model.hydrate({ prop: 'test' }, '-arr');
+      assert.equal(doc.isNew, false);
+      assert.equal(doc.isModified(), false);
+      assert.ok(!doc.$__delta());
+      assert.strictEqual(doc.prop, 'test');
+      assert.strictEqual(doc.arr, undefined);
+
+      doc = Model.hydrate({ prop: 'test' }, ['_id']);
+      assert.equal(doc.isNew, false);
+      assert.equal(doc.isModified(), false);
+      assert.ok(!doc.$__delta());
+      assert.ok(!doc.prop);
     });
 
     it('works correctly with model discriminators', function() {
@@ -197,6 +212,35 @@ describe('model', function() {
       const c = Company.hydrate(company, null, { hydratedPopulatedDocs: true });
       assert.ok(c.populated('users'));
       assert.ok(c.users[0] instanceof User);
+    });
+
+    it('hydrates populated refs in embedded docs', async function() {
+      const userSchema = new Schema({
+        name: String
+      });
+      const childSchema = new Schema({
+        user: { ref: 'HydrateEmbeddedUser', type: Schema.Types.ObjectId }
+      });
+      const parentSchema = new Schema({
+        child: childSchema
+      });
+
+      db.deleteModel(/HydrateEmbeddedUser/);
+      db.deleteModel(/HydrateEmbeddedParent/);
+      const User = db.model('HydrateEmbeddedUser', userSchema);
+      const Parent = db.model('HydrateEmbeddedParent', parentSchema);
+
+      const user = { _id: new mongoose.Types.ObjectId(), name: 'Val' };
+      const parent = {
+        _id: new mongoose.Types.ObjectId(),
+        child: { user }
+      };
+
+      const doc = Parent.hydrate(parent, null, { hydratedPopulatedDocs: true });
+
+      assert.ok(doc.child.populated('user'));
+      assert.ok(doc.child.user instanceof User);
+      assert.equal(doc.child.user.name, 'Val');
     });
 
     it('marks deeply nested docs as hydrated underneath virtuals (gh-15110)', async function() {
@@ -317,6 +361,190 @@ describe('model', function() {
       assert.equal(hydrated.stories[0].article.title, 'Cinema');
 
       assert.ok(!hydrated.stories[1].article);
+    });
+
+    it('applies virtuals to doubly-nested arrays (gh-15956)', function() {
+      const innerSchema = new Schema({ name: String });
+      innerSchema.virtual('computed');
+
+      const schema = new Schema({
+        matrix: [[innerSchema]]
+      });
+
+      const Model = db.model('Test3', schema);
+
+      const raw = {
+        _id: new mongoose.Types.ObjectId(),
+        matrix: [
+          [
+            { name: 'a', computed: 'virtual-a' },
+            { name: 'b', computed: 'virtual-b' }
+          ],
+          [
+            { name: 'c', computed: 'virtual-c' }
+          ]
+        ]
+      };
+
+      const doc = Model.hydrate(raw, null, { virtuals: true });
+
+      assert.strictEqual(doc.matrix[0][0].name, 'a');
+      assert.strictEqual(doc.matrix[0][0].computed, 'virtual-a');
+      assert.strictEqual(doc.matrix[0][1].name, 'b');
+      assert.strictEqual(doc.matrix[0][1].computed, 'virtual-b');
+      assert.strictEqual(doc.matrix[1][0].name, 'c');
+      assert.strictEqual(doc.matrix[1][0].computed, 'virtual-c');
+
+      // Test without virtuals option - should not apply virtuals
+      const doc2 = Model.hydrate(raw, null);
+      assert.strictEqual(doc2.matrix[0][0].name, 'a');
+      assert.strictEqual(doc2.matrix[0][0].computed, undefined);
+    });
+
+    describe('strict option (gh-15940)', function() {
+      beforeEach(() => db.deleteModel(/.*/));
+
+      it('strict: false exposes extra fields as document properties', function() {
+        // Arrange
+        const { Person } = createTestContext();
+
+        // Act
+        const person = Person.hydrate({
+          _id: '0'.repeat(24),
+          name: 'John',
+          age: 30,
+          extraField: 'not in schema'
+        }, null, { strict: false });
+
+        // Assert
+        assert.strictEqual(person.name, 'John');
+        assert.strictEqual(person.age, 30);
+        assert.strictEqual(person.extraField, 'not in schema');
+        assert.strictEqual(person.get('extraField'), 'not in schema');
+      });
+
+      it('strict: true stores extra fields but does not expose them as properties', function() {
+        // Arrange
+        const { Person } = createTestContext();
+
+        // Act
+        const person = Person.hydrate({
+          _id: '0'.repeat(24),
+          name: 'Jane',
+          age: 25,
+          extraField: 'should be ignored'
+        }, null, { strict: true });
+
+        // Assert
+        assert.strictEqual(person.name, 'Jane');
+        assert.strictEqual(person.age, 25);
+        assert.strictEqual(person.extraField, undefined);
+        assert.strictEqual(person.get('extraField'), 'should be ignored');
+      });
+
+      it('strict: "throw" throws error when hydrating document with extra fields', function() {
+        // Arrange
+        const { Person } = createTestContext();
+
+        // Act & Assert
+        assert.throws(() => {
+          Person.hydrate({
+            _id: '0'.repeat(24),
+            name: 'Bob',
+            age: 35,
+            extraField: 'should throw'
+          }, null, { strict: 'throw' });
+        }, /Field `extraField` is not in schema/);
+      });
+
+      it('uses schema strict mode when no strict option provided', function() {
+        // Arrange
+        const { Person } = createTestContext();
+
+        // Act
+        const person = Person.hydrate({
+          _id: '0'.repeat(24),
+          name: 'Alice',
+          age: 28,
+          extraField: 'uses schema default'
+        });
+
+        // Assert
+        assert.strictEqual(person.name, 'Alice');
+        assert.strictEqual(person.age, 28);
+        assert.strictEqual(person.extraField, undefined);
+        assert.strictEqual(person.get('extraField'), 'uses schema default');
+      });
+
+      function createTestContext() {
+        const personSchema = new Schema({
+          name: String,
+          age: Number
+        }, { strict: true });
+
+        const Person = db.model('HydrateStrictPerson', personSchema);
+
+        return { Person };
+      }
+    });
+
+    it('handles strict option to control non-schema properties', function() {
+      const strictSchema = new Schema({
+        name: String,
+        age: Number
+      }, { strict: true });
+
+      db.deleteModel(/Test/);
+      const Model = db.model('Test', strictSchema);
+
+      // Test with strict: false - should allow extra fields
+      const doc1 = Model.hydrate({
+        _id: '000000000000000000000001',
+        name: 'John',
+        age: 30,
+        extraField: 'not in schema'
+      }, null, { strict: false });
+
+      assert.equal(doc1.name, 'John');
+      assert.equal(doc1.age, 30);
+      assert.equal(doc1.extraField, 'not in schema');
+      assert.equal(doc1.get('extraField'), 'not in schema');
+
+      // Test with strict: true - should store extra fields but not expose them as properties
+      const doc2 = Model.hydrate({
+        _id: '000000000000000000000002',
+        name: 'Jane',
+        age: 25,
+        extraField: 'should be ignored'
+      }, null, { strict: true });
+
+      assert.equal(doc2.name, 'Jane');
+      assert.equal(doc2.age, 25);
+      assert.equal(doc2.extraField, undefined);
+      assert.equal(doc2.get('extraField'), 'should be ignored');
+
+      // Test with strict: 'throw' - should throw on extra fields
+      assert.throws(() => {
+        Model.hydrate({
+          _id: '000000000000000000000003',
+          name: 'Bob',
+          age: 35,
+          extraField: 'should throw'
+        }, null, { strict: 'throw' });
+      }, /Field `extraField` is not in schema/);
+
+      // Test with default schema strict mode (should use schema's strict: true)
+      const doc4 = Model.hydrate({
+        _id: '000000000000000000000004',
+        name: 'Alice',
+        age: 28,
+        extraField: 'uses schema default'
+      });
+
+      assert.equal(doc4.name, 'Alice');
+      assert.equal(doc4.age, 28);
+      assert.equal(doc4.extraField, undefined);
+      assert.equal(doc4.get('extraField'), 'uses schema default');
     });
   });
 });

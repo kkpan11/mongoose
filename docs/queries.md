@@ -1,9 +1,7 @@
 # Queries
 
-Mongoose [models](models.html) provide several static helper functions
-for [CRUD operations](https://en.wikipedia.org/wiki/Create,_read,_update_and_delete).
-Each of these functions returns a
-[mongoose `Query` object](api/query.html#Query).
+Mongoose [models](models.html) provide several static helper functions for [CRUD operations](https://en.wikipedia.org/wiki/Create,_read,_update_and_delete).
+Each of these functions returns a [mongoose `Query` object](api/query.html#Query).
 
 * [`Model.deleteMany()`](api.html#model_Model-deleteMany)
 * [`Model.deleteOne()`](api.html#model_Model-deleteOne)
@@ -20,11 +18,7 @@ Each of these functions returns a
 * [`Model.updateMany()`](api.html#model_Model-updateMany)
 * [`Model.updateOne()`](api.html#model_Model-updateOne)
 
-A mongoose query can be executed in one of two ways. First, if you
-pass in a `callback` function, Mongoose will execute the query asynchronously
-and pass the results to the `callback`.
-
-A query also has a `.then()` function, and thus can be used as a promise.
+Mongoose queries can be executed by using `await`, or by using `.then()` to handle the promise returned by the query.
 
 <ul class="toc">
   <li><a href="#executing">Executing</a></li>
@@ -47,7 +41,7 @@ const person = await Person.findOne({ 'name.last': 'Ghost' }, 'name occupation')
 console.log('%s %s is a %s.', person.name.first, person.name.last, person.occupation);
 ```
 
-What `person` is depends on the operation: For `findOne()` it is a [potentially-null single document](api/model.html#model_Model-findOne), `find()` a [list of documents](api/model.html#model_Model-find), `count()` [the number of documents](api/model.html#model_Model-count), `update()` the [number of documents affected](api/model.html#model_Model-update), etc.
+What `person` is depends on the operation: For `findOne()` it is a [potentially-null single document](api/model.html#model_Model-findOne), `find()` a [list of documents](api/model.html#model_Model-find), `countDocuments()` [the number of documents](api/model.html#model_Model-countDocuments), `updateOne()` the [number of documents affected](api/model.html#model_Model-updateOne), etc.
 The [API docs for Models](api/model.html) provide more details.
 
 Now let's look at what happens when no `await` is used:
@@ -111,12 +105,58 @@ await q.then(() => console.log('Update 2'));
 await q.then(() => console.log('Update 3'));
 ```
 
+## Pagination
+
+There are two common approaches to pagination: skip/limit pagination and
+cursor-based pagination.
+
+Skip/limit pagination, also called offset pagination, uses `sort()`, `skip()`,
+and `limit()` to retrieve a page at a particular offset.
+If the UI needs the exact total number of matching documents, run `find()` and `countDocuments()` separately:
+
+```javascript
+const filter = { active: true };
+const options = { sort: { createdAt: -1 }, skip: 20, limit: 20 };
+
+const [documents, total] = await Promise.all([
+  User.find(filter, null, options),
+  User.countDocuments(filter)
+]);
+```
+
+This pattern is sufficiently common that Mongoose provides a convenience wrapper `Model.findAndCount()` around these two operations:
+
+```javascript
+// The following...
+const [documents, total] = await User.findAndCount(filter, null, options);
+
+// is equivalent to:
+const [documents, total] = await Promise.all([
+  User.find(filter, null, options),
+  User.countDocuments(filter)
+]);
+```
+
+For large result sets, `skip()` can be inefficient, particularly when frequently calling `skip()` with large values.
+`skip()` has to loop through the documents to skip - `.limit(20).skip(100)` means MongoDB needs to iterate through 120 documents.
+Performance degrades linearly as `skip()` size grows.
+
+Instead of an offset, use a value from the last document on the previous page,
+such as `_id` or a timestamp, in the next filter.
+For example, with a descending `_id` sort:
+
+```javascript
+const filter = lastSeenId == null ? {} : { _id: { $lt: lastSeenId } };
+const documents = await User.find(filter).sort({ _id: -1 }).limit(20);
+```
+
+Presuming you filter by an indexed field (MongoDB collections always have an index on `_id`), cursor-based pagination provides consistent performance as the number of documents to skip grows.
+
 ## References to other documents {#refs}
 
-There are no joins in MongoDB but sometimes we still want references to
-documents in other collections. This is where [population](populate.html)
-comes in. Read more about how to include documents from other collections in
-your query results [here](api/query.html#query_Query-populate).
+There are no joins in MongoDB but sometimes we still want references to documents in other collections.
+This is where [population](populate.html) comes in.
+Read more about how to include documents from other collections in your query results in the [population documentation](api/query.html#query_Query-populate).
 
 ## Streaming {#streaming}
 
@@ -199,7 +239,7 @@ const aggRes = await Person.aggregate([{ $match: { _id: idString } }]);
 
 ## Sorting {#sorting}
 
-[Sorting](/docs/api.html#query_Query-sort) is how you can ensure your query results come back in the desired order.
+[Sorting](api/query.html#query_Query-sort) is how you can ensure your query results come back in the desired order.
 
 ```javascript
 const personSchema = new mongoose.Schema({
@@ -215,7 +255,7 @@ await Person.find().sort({ age: -1 }); // returns age starting from 10 as the fi
 await Person.find().sort({ age: 1 }); // returns age starting from 0 as the first entry
 ```
 
-When sorting with mutiple fields, the order of the sort keys determines what key MongoDB server sorts by first.
+When sorting with multiple fields, the order of the sort keys determines what key MongoDB server sorts by first.
 
 ```javascript
 const personSchema = new mongoose.Schema({
